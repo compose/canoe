@@ -1,0 +1,49 @@
+* Refactor as wrapper rather than standalone
+* What do we want to pass in?
+	* API(http.Handler) - which we will mux against addition endpoint - MAYBE get rid of this
+	* API Bind Port
+	* API Bind Address - default to 0.0.0.0
+	* State Machine - take influence from hashicorp raft and build out interface
+	* List of Peers to connect to - this will act a bit differently than the etcd-raft examples
+	* Bootstrap node flag
+
+* What we want to lock down?
+	* No custom transport. We're using the rafthttp.Transport on the backend
+		* May seem heavy handed. But it works. That's all we want for now
+		* This will lock people out from querying the transport for current leader
+		   But we can add some custom ways to determine this. It's best to abstract this for now
+
+
+Logic flow:
+
+	if we are a bootstrap node:
+		Commit ourselves to our log by generating a uuid
+		Because we don't have a deterministic way to calculate the ID of
+			another node in the peer list, we ignore the peer list
+			because it would cause potential out of order additions to the raft log
+			and when trying to replay the log to new peers would result in unexpected 
+			and broken behavior
+		listen for new node requests on our API
+		Do raft stuffs and call the proper FSM application methods
+	
+	else:
+		Gen our UUID
+		Send add node requests to each peer in the peerlist round robin repeat xtimeout
+			until we get a successful reply and start getting log playback data
+		Once we are part of a cluster we can start accepting add node requests too
+		start rafting and writing to the FSM
+
+Caveats
+	ONLY 1 node in a cluster may EVER be declared with the bootstrap flag.
+		split brain and other nasties could occur
+	ONLY the bootstrap node can start it's life by starting raft and waiting for add requests
+		all other nodes must find and join an active cluster before accepting add requests
+		this means that if the bootstrap node goes down before other nodes find it, gameover
+		Unless after a timeout a Node tries to become bootstrap? Would need to be randomized somehow to
+		ensure a set of startup nodes don't all become a bootstrap node
+
+Should Add? Maybe?
+	After timeout of having a Node lost connection, then ConfChange drop that sucker from the log
+
+	Consider do we want to try and ensure we don't have backup of logs, or ensure we have consistency between
+		raft log and FSM - Maybe add as an option?
