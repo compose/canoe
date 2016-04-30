@@ -13,6 +13,8 @@ import (
 	"sleep"
 )
 
+type LogData []byte
+
 type RaftNode struct {
 	node        raft.Node
 	raftStorage *raft.MemoryStorage
@@ -21,8 +23,11 @@ type RaftNode struct {
 	id          uint64
 	port        int
 
-	proposeC chan string
-	fsm      *FSM
+	initialized bool
+	proposeC    chan string
+	fsm         *FSM
+
+	observers map[uint64]*Observer
 }
 
 // note: peers is only for asking to join the cluster.
@@ -38,21 +43,23 @@ func NewRaftNode(fsm *FSM, bindPort string, peers []string, bootstrapNode bool) 
 	if err := rn.attachTransport(); err != nil {
 		return nil, err
 	}
+
+	go rn.run()
+
 	if err := rn.joinPeers(); err != nil {
 		return nil, err
 	}
 
-	go rn.run()
+	// final step to mark node as initialized
+	rn.initialized = true
 
-	// blocking call with timeout
-	// NOTE: We don't want to add ourself as our own peer yet.
-	// We want some node to commit our addition to the cluster
-	// so it will be written to us whenever a leader is elected
-	rn.joinPeers()
 	return rn, nil
 }
 
 func nonInitRNode(fsm *FSM, bindPort string, peers []string, boostrapNode bool) RaftNode {
+	if bootstrapNode {
+		peers = nil
+	}
 	rn := &RaftNode{
 		proposeC:    make(chan string),
 		cluster:     0x1000,
@@ -61,6 +68,7 @@ func nonInitRNode(fsm *FSM, bindPort string, peers []string, boostrapNode bool) 
 		id:          Uint64UUID(),
 		port:        bindPort,
 		fsm:         fsm,
+		initialized: false,
 	}
 
 	c := &raft.Config{
@@ -105,23 +113,84 @@ func (rn *raftNode) joinPeers() error {
 	}
 }
 
+func (rn *raftNode) proposePeerAddition(addReq raftpb.ConfChange, async bool) error {
+	addReq.Type = raftpb.ConfChangeAddNode
+
+	if !async {
+		// TODO: Setup listener for confchange commit
+	}
+
+	if err := rn.node.ProposeConfChange(context.TODO(), addReq); err != nil {
+		return err
+	}
+
+	if async {
+		return nil
+	}
+
+	// TODO: Listen for confchange commit
+	// repeat on a given timeout
+	// Err after a certain number of retries
+}
+
+func (rn *raftNode) canAddPeer() bool {
+	return rn.isHealthy() && rn.initialized
+}
+
+// TODO: Define healthy
+func (rn *raftNode) isHealthy() bool {
+	return true
+}
+
 func (rn *raftNode) run() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ticker.C:
-			rc.node.Tick()
-		case rd := <-rc.node.Ready():
-			rc.raftStorage.Append(rd.Entries)
-			rc.transport.Send(rd.Messages)
-			if ok := rc.publishEntries(rd.CommittedEntries); !ok {
+			rn.node.Tick()
+		case rd := <-rn.node.Ready():
+			rn.raftStorage.Append(rd.Entries)
+			rn.transport.Send(rd.Messages)
+			if ok := rn.publishEntries(rd.CommittedEntries); !ok {
 				return
 			}
 
 			rc.node.Advance()
 		}
 	}
+}
+
+func (rn *raftNode) publishEntries(ents []raftpb.Entry) bool {
+	for _, entry := range ents {
+		rn.observe(entry)
+		switch entry.Type {
+		case raftpb.EntryNormal:
+			if len(entry.Data) == 0 {
+				break
+			}
+			rn.fsm.Apply(entry.Data.(LogData))
+		case raftpb.EntryConfChange:
+			var cc raftpb.ConfChange
+			cc.Unmarshal(entry.Data)
+			rn.node.ApplyConfChange(cc)
+			switch cc.Type {
+			case raftpb.ConfChangeAddNode:
+				if len(cc.Context) > 0 {
+					rn.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
+				}
+			case raftpb.ConfChangeRemoveNode:
+				if cc.NodeID == uint64(rn.id) {
+					log.Println("I have been removed!")
+					return false
+				}
+				rn.transport.RemovePeer(types.ID(cc.NodeID))
+			}
+		}
+		// TODO: Add support for replay commits
+	}
+	return true
 }
 
 func (rn *raftNode) Process(ctx context.Context, m raftpb.Message) {

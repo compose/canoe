@@ -7,7 +7,7 @@ import (
 )
 
 type FSM interface {
-	Apply(entry raftpb.Entry)
+	Apply(entry LogData)
 	Snapshot() (raftpb.Snapshot, error)
 	Restore(snap raftpb.Snapshot) error
 	RegisterAPI(router *mux.Router)
