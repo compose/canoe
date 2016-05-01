@@ -52,9 +52,16 @@ func (rn *RaftNode) handlePeerAddRequest(w http.ResponseWriter, req *http.Reques
 		}
 		writeSuccess(w)
 	} else {
-		writeInvalidNode(w)
+		writeNodeCannotAdd(w)
 	}
 }
+
+type PeerAdditionResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+var PeerAdditionNodeCannotAdd = "Invalid Node"
 
 // Host address should be able to be scraped from the Request on the server-end
 type peerAdditionRequest struct {
@@ -62,14 +69,19 @@ type peerAdditionRequest struct {
 	Port string `json:"port"`
 }
 
-// TODO: Implement
 func writeSuccess(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: "success"})
 }
-
-// TODO: Implement
 func writeError(w http.ResponseWriter, code int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: "error", Message: err.Error()})
 }
 
-// TODO: Implement
 func writeInvalidNode(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: "error", Message: PeerAdditionNodeCannodAdd})
 }

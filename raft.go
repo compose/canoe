@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sleep"
+	"sync"
 )
 
 type LogData []byte
@@ -27,7 +28,8 @@ type RaftNode struct {
 	proposeC    chan string
 	fsm         *FSM
 
-	observers map[uint64]*Observer
+	observers     map[uint64]*Observer
+	observersLock sync.RWMutex
 }
 
 // note: peers is only for asking to join the cluster.
@@ -128,9 +130,37 @@ func (rn *raftNode) proposePeerAddition(addReq raftpb.ConfChange, async bool) er
 		return nil
 	}
 
-	// TODO: Listen for confchange commit
-	// repeat on a given timeout
-	// Err after a certain number of retries
+	observChan := make(chan Observation)
+	filterFn := func(o *Observation) bool {
+		switch o.(type) {
+		case raftpb.EntryConfChange:
+			var cc raftpb.ConfChange
+			cc.Unmarshal(entry.Data)
+			rn.node.ApplyConfChange(cc)
+			switch cc.Type {
+			case raftpb.ConfChangeAddNode:
+				// wait until we get a matching node id
+				return addReq.NodeID == cc.NodeID
+			default:
+				return false
+			}
+		default:
+			return false
+		}
+	}
+
+	observer := NewObserver(observChan, filterFn)
+	rn.RegisterObserver(observer)
+	defer rn.UnregisterObserver(observer)
+
+	// TODO: Do a retry here on failure for x retries
+	switch {
+	case <-observChan:
+		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("Timed out waiting for add log to commit")
+
+	}
 }
 
 func (rn *raftNode) canAddPeer() bool {
@@ -170,11 +200,17 @@ func (rn *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			if len(entry.Data) == 0 {
 				break
 			}
+			// Yes, this is probably a blocking call
+			// An FSM should be responsible for being efficient
+			// for high-load situations
 			rn.fsm.Apply(entry.Data.(LogData))
+
+			rn.observe(entry)
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			cc.Unmarshal(entry.Data)
 			rn.node.ApplyConfChange(cc)
+
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
@@ -187,6 +223,8 @@ func (rn *raftNode) publishEntries(ents []raftpb.Entry) bool {
 				}
 				rn.transport.RemovePeer(types.ID(cc.NodeID))
 			}
+
+			rn.observe(entry)
 		}
 		// TODO: Add support for replay commits
 	}
