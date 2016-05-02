@@ -1,7 +1,6 @@
 package raftwrapper
 
 import (
-	"fmt"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/gorilla/mux"
 )

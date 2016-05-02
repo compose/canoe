@@ -1,4 +1,4 @@
-package ha
+package raftwrapper
 
 import (
 	"encoding/binary"

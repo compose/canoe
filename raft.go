@@ -1,17 +1,16 @@
 package raftwrapper
 
 import (
-	"encoding/bytes"
+	"fmt"
+	"github.com/coreos/etcd/etcdserver/stats"
+	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/rafthttp"
-	"github.com/coreos/etcd/stats"
-	"github.com/coreos/etcd/version"
 	"golang.org/x/net/context"
-	"net/http"
-	"net/url"
-	"sleep"
+	"strconv"
 	"sync"
+	"time"
 )
 
 type LogData []byte
@@ -23,10 +22,11 @@ type RaftNode struct {
 	peers       []string
 	id          uint64
 	port        int
+	cluster     int
 
 	initialized bool
 	proposeC    chan string
-	fsm         *FSM
+	fsm         FSM
 
 	observers     map[uint64]*Observer
 	observersLock sync.RWMutex
@@ -39,7 +39,7 @@ type RaftNode struct {
 // TODO: Look into which config options we want others to specify. For now hardcoded
 // NOTE: Peers are used EXCLUSIVELY to round-robin to other nodes and attempt to add
 //		ourselves to an existing cluster or bootstrap node
-func NewRaftNode(fsm *FSM, bindPort string, peers []string, bootstrapNode bool) (*raftNode, error) {
+func NewRaftNode(fsm FSM, bindPort int, peers []string, bootstrapNode bool) (*RaftNode, error) {
 	rn := nonInitRNode(fsm, bindPort, peers, bootstrapNode)
 
 	if err := rn.attachTransport(); err != nil {
@@ -58,7 +58,7 @@ func NewRaftNode(fsm *FSM, bindPort string, peers []string, bootstrapNode bool) 
 	return rn, nil
 }
 
-func nonInitRNode(fsm *FSM, bindPort string, peers []string, boostrapNode bool) RaftNode {
+func nonInitRNode(fsm FSM, bindPort int, peers []string, bootstrapNode bool) *RaftNode {
 	if bootstrapNode {
 		peers = nil
 	}
@@ -83,46 +83,76 @@ func nonInitRNode(fsm *FSM, bindPort string, peers []string, boostrapNode bool) 
 	}
 
 	if bootstrapNode {
-		rn.node = raft.StartNode(c, raft.Peer{ID: rn.id})
+		rn.node = raft.StartNode(c, []raft.Peer{raft.Peer{ID: rn.id}})
 	} else {
 		rn.node = raft.StartNode(c, nil)
 	}
+
+	return rn
 }
 
-func (rn *raftNode) attachTransport() error {
+func (rn *RaftNode) attachTransport() error {
 	ss := &stats.ServerStats{}
 	ss.Initialize()
-
-	ls := &stats.LeaderStats{}
 
 	rn.transport = &rafthttp.Transport{
 		ID:          types.ID(rn.id),
 		ClusterID:   0x1000,
 		Raft:        rn,
 		ServerStats: ss,
-		LeaderStats: stats.NewLeaderStats(strconv.Itoa(rn.id)),
+		LeaderStats: stats.NewLeaderStats(strconv.FormatUint(rn.id, 10)),
 		ErrorC:      make(chan error),
 	}
 
-	rc.Transport.Start()
+	rn.transport.Start()
 	return nil
 }
 
-func (rn *raftNode) joinPeers() error {
-	resp, err := rn.askForAddition()
+func (rn *RaftNode) joinPeers() error {
+	err := rn.requestSelfAddition()
 	if err != nil {
 		return err
 	}
+	return nil
 }
 
-func (rn *raftNode) proposePeerAddition(addReq raftpb.ConfChange, async bool) error {
+func (rn *RaftNode) proposePeerAddition(addReq *raftpb.ConfChange, async bool) error {
 	addReq.Type = raftpb.ConfChangeAddNode
 
+	observChan := make(chan Observation)
+	// setup listener for node addition
+	// before asking for node addition
 	if !async {
-		// TODO: Setup listener for confchange commit
+		filterFn := func(o Observation) bool {
+			switch o.(type) {
+			case raftpb.Entry:
+				entry := o.(raftpb.Entry)
+				switch entry.Type {
+				case raftpb.EntryConfChange:
+					var cc raftpb.ConfChange
+					cc.Unmarshal(entry.Data)
+					rn.node.ApplyConfChange(cc)
+					switch cc.Type {
+					case raftpb.ConfChangeAddNode:
+						// wait until we get a matching node id
+						return addReq.NodeID == cc.NodeID
+					default:
+						return false
+					}
+				default:
+					return false
+				}
+			default:
+				return false
+			}
+		}
+
+		observer := NewObserver(observChan, filterFn)
+		rn.RegisterObserver(observer)
+		defer rn.UnregisterObserver(observer)
 	}
 
-	if err := rn.node.ProposeConfChange(context.TODO(), addReq); err != nil {
+	if err := rn.node.ProposeConfChange(context.TODO(), *addReq); err != nil {
 		return err
 	}
 
@@ -130,31 +160,8 @@ func (rn *raftNode) proposePeerAddition(addReq raftpb.ConfChange, async bool) er
 		return nil
 	}
 
-	observChan := make(chan Observation)
-	filterFn := func(o *Observation) bool {
-		switch o.(type) {
-		case raftpb.EntryConfChange:
-			var cc raftpb.ConfChange
-			cc.Unmarshal(entry.Data)
-			rn.node.ApplyConfChange(cc)
-			switch cc.Type {
-			case raftpb.ConfChangeAddNode:
-				// wait until we get a matching node id
-				return addReq.NodeID == cc.NodeID
-			default:
-				return false
-			}
-		default:
-			return false
-		}
-	}
-
-	observer := NewObserver(observChan, filterFn)
-	rn.RegisterObserver(observer)
-	defer rn.UnregisterObserver(observer)
-
 	// TODO: Do a retry here on failure for x retries
-	switch {
+	select {
 	case <-observChan:
 		return nil
 	case <-time.After(10 * time.Second):
@@ -163,16 +170,16 @@ func (rn *raftNode) proposePeerAddition(addReq raftpb.ConfChange, async bool) er
 	}
 }
 
-func (rn *raftNode) canAddPeer() bool {
+func (rn *RaftNode) canAddPeer() bool {
 	return rn.isHealthy() && rn.initialized
 }
 
 // TODO: Define healthy
-func (rn *raftNode) isHealthy() bool {
+func (rn *RaftNode) isHealthy() bool {
 	return true
 }
 
-func (rn *raftNode) run() {
+func (rn *RaftNode) run() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -187,14 +194,13 @@ func (rn *raftNode) run() {
 				return
 			}
 
-			rc.node.Advance()
+			rn.node.Advance()
 		}
 	}
 }
 
-func (rn *raftNode) publishEntries(ents []raftpb.Entry) bool {
+func (rn *RaftNode) publishEntries(ents []raftpb.Entry) bool {
 	for _, entry := range ents {
-		rn.observe(entry)
 		switch entry.Type {
 		case raftpb.EntryNormal:
 			if len(entry.Data) == 0 {
@@ -203,9 +209,8 @@ func (rn *raftNode) publishEntries(ents []raftpb.Entry) bool {
 			// Yes, this is probably a blocking call
 			// An FSM should be responsible for being efficient
 			// for high-load situations
-			rn.fsm.Apply(entry.Data.(LogData))
+			rn.fsm.Apply(LogData(entry.Data))
 
-			rn.observe(entry)
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			cc.Unmarshal(entry.Data)
@@ -218,19 +223,26 @@ func (rn *raftNode) publishEntries(ents []raftpb.Entry) bool {
 				}
 			case raftpb.ConfChangeRemoveNode:
 				if cc.NodeID == uint64(rn.id) {
-					log.Println("I have been removed!")
+					fmt.Println("I have been removed!")
 					return false
 				}
 				rn.transport.RemovePeer(types.ID(cc.NodeID))
 			}
 
-			rn.observe(entry)
 		}
+		rn.observe(entry)
 		// TODO: Add support for replay commits
+		// After replaying old commits/snapshots then mark
+		// this node operational
 	}
 	return true
 }
 
-func (rn *raftNode) Process(ctx context.Context, m raftpb.Message) {
+func (rn *RaftNode) Process(ctx context.Context, m raftpb.Message) error {
 	return rn.node.Step(ctx, m)
 }
+func (rn *RaftNode) IsIDRemoved(id uint64) bool {
+	return false
+}
+func (rn *RaftNode) ReportUnreachable(id uint64)                          {}
+func (rn *RaftNode) ReportSnapshot(id uint64, status raft.SnapshotStatus) {}

@@ -6,7 +6,7 @@ import (
 
 type Observation interface{}
 
-type FilterFn func(o *Opservation) bool
+type FilterFn func(o Observation) bool
 
 var nextObserverId uint64
 
@@ -20,15 +20,15 @@ func NewObserver(channel chan Observation, filter FilterFn) *Observer {
 	return &Observer{
 		channel: channel,
 		filter:  filter,
-		id:      atomic.AddUnit64(&nextObserverId, 1),
+		id:      atomic.AddUint64(&nextObserverId, 1),
 	}
 }
 
-func (rn *raftNode) observe(data LogData) {
-	r.observersLock.RLock()
-	defer r.observersLock.RUnlock()
-	for _, observer := range r.observers {
-		if observer.filter != nil && !observer.filter(&data) {
+func (rn *RaftNode) observe(data Observation) {
+	rn.observersLock.RLock()
+	defer rn.observersLock.RUnlock()
+	for _, observer := range rn.observers {
+		if observer.filter != nil && !observer.filter(interface{}(&data).(*Observation)) {
 			continue
 		}
 		if observer.channel == nil {
@@ -45,14 +45,14 @@ func (rn *raftNode) observe(data LogData) {
 	}
 }
 
-func (rn *raftNode) RegisterObserver(o *Observer) {
-	r.observersLock.Lock()
-	defer r.observersLock.Unlock()
-	r.observers[o.id] = o
+func (rn *RaftNode) RegisterObserver(o *Observer) {
+	rn.observersLock.Lock()
+	defer rn.observersLock.Unlock()
+	rn.observers[o.id] = o
 }
 
-func (rn *raftNode) UnregisterObserver(o *Observer) {
-	r.observersLock.Lock()
-	defer r.observersLock.Unlock()
-	delete(r.observers, o.id)
+func (rn *RaftNode) UnregisterObserver(o *Observer) {
+	rn.observersLock.Lock()
+	defer rn.observersLock.Unlock()
+	delete(rn.observers, o.id)
 }

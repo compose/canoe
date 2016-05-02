@@ -1,17 +1,19 @@
 package raftwrapper
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/gorilla/mux"
 	"net/http"
+	"strings"
 )
 
 var peerAddEndpoint = "/peerAddition"
 var FSMAPIEndpoint = "/api"
 
-func (rn *RaftNode) peerAPI() *http.Handler {
+func (rn *RaftNode) peerAPI() *mux.Router {
 	r := mux.NewRouter()
 
 	rn.fsm.RegisterAPI(r.PathPrefix(FSMAPIEndpoint).Subrouter())
@@ -21,7 +23,7 @@ func (rn *RaftNode) peerAPI() *http.Handler {
 }
 
 // wrapper to allow rn state to persist through handler func
-func (rn *RaftNode) peerAddHandlerFunc() {
+func (rn *RaftNode) peerAddHandlerFunc() func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		rn.handlePeerAddRequest(w, req)
 	}
@@ -36,15 +38,15 @@ func (rn *RaftNode) handlePeerAddRequest(w http.ResponseWriter, req *http.Reques
 	if rn.canAddPeer() {
 		var addReq peerAdditionRequest
 
-		if err := json.NewDecoder(bytes.NewReader(req.Body)).Decode(&addReq); err != nil {
+		if err := json.NewDecoder(req.Body).Decode(&addReq); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 		}
 
-		url := fmt.Sprintf("%s:%s", req.RemoteAddr.Split(":")[0], addReq.Port)
+		url := fmt.Sprintf("%s:%s", strings.Split(req.RemoteAddr, ":")[0], addReq.Port)
 
 		confChange := &raftpb.ConfChange{
 			NodeID:  addReq.ID,
-			Context: url,
+			Context: []byte(url),
 		}
 
 		if err := rn.proposePeerAddition(confChange, false); err != nil {
@@ -52,36 +54,64 @@ func (rn *RaftNode) handlePeerAddRequest(w http.ResponseWriter, req *http.Reques
 		}
 		writeSuccess(w)
 	} else {
-		writeNodeCannotAdd(w)
+		writeNodeNotReady(w)
 	}
 }
+
+func (rn *RaftNode) requestSelfAddition() error {
+	reqData := peerAdditionRequest{
+		ID:   rn.id,
+		Port: rn.port,
+	}
+	for _, peer := range rn.peers {
+		mar, err := json.Marshal(reqData)
+		if err != nil {
+			return err
+		}
+
+		reader := bytes.NewReader(mar)
+
+		_, err = http.Post(peer, "application/json", reader)
+		if err != nil {
+			return err
+		}
+
+		//TODO: Determine how errors are returned over http
+		//var respData PeerAdditionResponse
+
+	}
+	return nil
+}
+
+var PeerAdditionStatusSuccess = "success"
+var PeerAdditionStatusError = "error"
 
 type PeerAdditionResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
 }
 
-var PeerAdditionNodeCannotAdd = "Invalid Node"
+var PeerAdditionNodeNotReady = "Invalid Node"
 
 // Host address should be able to be scraped from the Request on the server-end
 type peerAdditionRequest struct {
-	ID   string `json:"id"`
-	Port string `json:"port"`
+	ID   uint64 `json:"id"`
+	Port int    `json:"port"`
 }
 
 func writeSuccess(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: "success"})
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess})
 }
 func writeError(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: "error", Message: err.Error()})
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusError, Message: err.Error()})
 }
 
-func writeInvalidNode(w http.ResponseWriter) {
+func writeNodeNotReady(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
-	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: "error", Message: PeerAdditionNodeCannodAdd})
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusError, Message: PeerAdditionNodeNotReady})
 }
