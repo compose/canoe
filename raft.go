@@ -20,6 +20,7 @@ type Node struct {
 	raftStorage *raft.MemoryStorage
 	transport   *rafthttp.Transport
 	peers       []string
+	peerMap     map[uint64]string
 	id          uint64
 	raftPort    int
 	cluster     int
@@ -109,6 +110,7 @@ func nonInitNode(args *NodeConfig) *Node {
 		fsm:         args.FSM,
 		initialized: false,
 		observers:   make(map[uint64]*Observer),
+		peerMap:     make(map[uint64]string),
 	}
 
 	c := &raft.Config{
@@ -260,6 +262,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
 					rn.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
+					rn.peerMap[cc.NodeID] = string(cc.Context)
 				}
 			case raftpb.ConfChangeRemoveNode:
 				if cc.NodeID == uint64(rn.id) {

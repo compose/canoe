@@ -102,8 +102,8 @@ func (rn *Node) requestSelfAddition() error {
 		}
 
 		// this ought to work since it should be added to cluster now
-		var portID PeerAdditionAddMe
-		if err := json.Unmarshal(respData.Data, &portID); err != nil {
+		var peerData PeerAdditionResponseData
+		if err := json.Unmarshal(respData.Data, &peerData); err != nil {
 			return err
 		}
 
@@ -112,9 +112,16 @@ func (rn *Node) requestSelfAddition() error {
 			return err
 		}
 
-		addURL := fmt.Sprintf("http://%s:%s", strings.Split(peerURL.Host, ":")[0], strconv.Itoa(portID.Port))
+		addURL := fmt.Sprintf("http://%s:%s", strings.Split(peerURL.Host, ":")[0], strconv.Itoa(peerData.Port))
 
-		rn.transport.AddPeer(types.ID(portID.ID), []string{addURL})
+		rn.transport.AddPeer(types.ID(peerData.ID), []string{addURL})
+		rn.peerMap[peerData.ID] = addURL
+
+		for id, addURL := range peerData.RemotePeers {
+			if id != rn.id {
+				rn.transport.AddPeer(types.ID(id), []string{addURL})
+			}
+		}
 
 		//TODO: Determine how errors are returned over http
 		//var respData PeerAdditionResponse
@@ -126,9 +133,57 @@ func (rn *Node) requestSelfAddition() error {
 var PeerAdditionStatusSuccess = "success"
 var PeerAdditionStatusError = "error"
 
-type PeerAdditionAddMe struct {
-	Port int    `json:"port"`
-	ID   uint64 `json:"id"`
+// PeerAdditionAddMe has self-identifying port and id
+// With a list of all Peers in the cluster currently
+//TODO: Get rid of []byte field below. Unnescessary
+type PeerAdditionResponseData struct {
+	Port        int               `json:"port"`
+	ID          uint64            `json:"id"`
+	RemotePeers map[uint64]string `json:"peers"`
+}
+
+func (p *PeerAdditionResponseData) MarshalJSON() ([]byte, error) {
+	tmpStruct := &struct {
+		Port        int               `json:"port"`
+		ID          uint64            `json:"id"`
+		RemotePeers map[string]string `json:"peers"`
+	}{
+		Port:        p.Port,
+		ID:          p.ID,
+		RemotePeers: make(map[string]string),
+	}
+
+	for key, val := range p.RemotePeers {
+		tmpStruct.RemotePeers[strconv.FormatUint(key, 10)] = val
+	}
+
+	return json.Marshal(tmpStruct)
+}
+
+func (p *PeerAdditionResponseData) UnmarshalJSON(data []byte) error {
+	tmpStruct := &struct {
+		Port        int               `json:"port"`
+		ID          uint64            `json:"id"`
+		RemotePeers map[string]string `json:"peers"`
+	}{}
+
+	if err := json.Unmarshal(data, tmpStruct); err != nil {
+		return err
+	}
+
+	p.Port = tmpStruct.Port
+	p.ID = tmpStruct.ID
+	p.RemotePeers = make(map[uint64]string)
+
+	for key, val := range tmpStruct.RemotePeers {
+		convKey, err := strconv.ParseUint(key, 10, 64)
+		if err != nil {
+			return err
+		}
+		p.RemotePeers[convKey] = val
+	}
+
+	return nil
 }
 
 type PeerAdditionResponse struct {
@@ -145,21 +200,26 @@ type peerAdditionRequest struct {
 	Port int    `json:"port"`
 }
 
+// TODO: Add all peers in the cluster with this response lest we break things
 func writeSuccess(w http.ResponseWriter, rn *Node) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
-	addMe := &PeerAdditionAddMe{
-		Port: rn.raftPort,
-		ID:   rn.id,
+	addMe := &PeerAdditionResponseData{
+		Port:        rn.raftPort,
+		ID:          rn.id,
+		RemotePeers: rn.peerMap,
 	}
 
-	addMeData, err := json.Marshal(addMe)
+	respData, err := json.Marshal(addMe)
 	if err != nil {
 		panic(err)
 	}
 
-	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess, Data: addMeData})
+	err = json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess, Data: respData})
+	if err != nil {
+		fmt.Println("ERROROROR", err.Error())
+	}
 	//json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess})
 }
 func writeError(w http.ResponseWriter, code int, err error) {
