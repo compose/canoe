@@ -1,13 +1,20 @@
 package raftwrapper
 
 import (
-	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/gorilla/mux"
 )
 
+type SnapshotData []byte
+
 type FSM interface {
-	Apply(entry LogData)
-	Snapshot() (raftpb.Snapshot, error)
-	Restore(snap raftpb.Snapshot) error
+	// Be sparing with errors for all the following.
+	// Err only if it results in bad state.
+	// Because it will halt all the things
+	Apply(entry LogData) error
+	Snapshot() (SnapshotData, error)
+	Restore(snap SnapshotData) error
+
+	// Add handlefuncs to the mux router to have them appear at endpoint
+	// 0.0.0.0:BIND_PORT/api/[endpoints]
 	RegisterAPI(router *mux.Router)
 }

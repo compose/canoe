@@ -24,7 +24,7 @@ func NewObserver(channel chan Observation, filter FilterFn) *Observer {
 	}
 }
 
-func (rn *RaftNode) observe(data Observation) {
+func (rn *Node) observe(data Observation) {
 	rn.observersLock.RLock()
 	defer rn.observersLock.RUnlock()
 	for _, observer := range rn.observers {
@@ -45,13 +45,13 @@ func (rn *RaftNode) observe(data Observation) {
 	}
 }
 
-func (rn *RaftNode) RegisterObserver(o *Observer) {
+func (rn *Node) RegisterObserver(o *Observer) {
 	rn.observersLock.Lock()
 	defer rn.observersLock.Unlock()
 	rn.observers[o.id] = o
 }
 
-func (rn *RaftNode) UnregisterObserver(o *Observer) {
+func (rn *Node) UnregisterObserver(o *Observer) {
 	rn.observersLock.Lock()
 	defer rn.observersLock.Unlock()
 	delete(rn.observers, o.id)

@@ -13,7 +13,7 @@ import (
 var peerAddEndpoint = "/peerAddition"
 var FSMAPIEndpoint = "/api"
 
-func (rn *RaftNode) peerAPI() *mux.Router {
+func (rn *Node) peerAPI() *mux.Router {
 	r := mux.NewRouter()
 
 	rn.fsm.RegisterAPI(r.PathPrefix(FSMAPIEndpoint).Subrouter())
@@ -22,8 +22,17 @@ func (rn *RaftNode) peerAPI() *mux.Router {
 	return r
 }
 
+func (rn *Node) serveHTTP() {
+	router := rn.peerAPI()
+	http.ListenAndServe(fmt.Sprintf(":%d", rn.apiPort), router)
+}
+
+func (rn *Node) serveRaft() {
+	http.ListenAndServe(fmt.Sprintf(":%d", rn.raftPort), rn.transport.Handler())
+}
+
 // wrapper to allow rn state to persist through handler func
-func (rn *RaftNode) peerAddHandlerFunc() func(http.ResponseWriter, *http.Request) {
+func (rn *Node) peerAddHandlerFunc() func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		rn.handlePeerAddRequest(w, req)
 	}
@@ -34,7 +43,7 @@ func (rn *RaftNode) peerAddHandlerFunc() func(http.ResponseWriter, *http.Request
 //
 // Otherwise respond with an error that this node isn't in a state to add
 // members
-func (rn *RaftNode) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
+func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 	if rn.canAddPeer() {
 		var addReq peerAdditionRequest
 
@@ -58,10 +67,10 @@ func (rn *RaftNode) handlePeerAddRequest(w http.ResponseWriter, req *http.Reques
 	}
 }
 
-func (rn *RaftNode) requestSelfAddition() error {
+func (rn *Node) requestSelfAddition() error {
 	reqData := peerAdditionRequest{
 		ID:   rn.id,
-		Port: rn.port,
+		Port: rn.raftPort,
 	}
 	for _, peer := range rn.peers {
 		mar, err := json.Marshal(reqData)

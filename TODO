@@ -1,16 +1,16 @@
 * Refactor as wrapper rather than standalone
 * What do we want to pass in?
-	* API(http.Handler) - which we will mux against addition endpoint - MAYBE get rid of this
-	* API Bind Port
-	* API Bind Address - default to 0.0.0.0
-	* State Machine - take influence from hashicorp raft and build out interface
-	* List of Peers to connect to - this will act a bit differently than the etcd-raft examples
-	* Bootstrap node flag
+	* API(http.Handler) - which we will mux against addition endpoint - MAYBE get rid of this - DONE
+	* API Bind Port - DONE
+	* API Bind Address - default to 0.0.0.0 - PENDING TESTING
+	* State Machine - take influence from hashicorp raft and build out interface - DONE
+	* List of Peers to connect to - this will act a bit differently than the etcd-raft examples - DONE
+	* Bootstrap node flag -DONE
 
 * What we want to lock down?
-	* No custom transport. We're using the rafthttp.Transport on the backend
-		* May seem heavy handed. But it works. That's all we want for now
-		* This will lock people out from querying the transport for current leader
+	* No custom transport. We're using the rafthttp.Transport on the backend - DONE
+		* May seem heavy handed. But it works. That's all we want for now -DONE
+		* This will lock people out from querying the transport for current leader - DONE
 		   But we can add some custom ways to determine this. It's best to abstract this for now
 
 
@@ -47,3 +47,8 @@ Should Add? Maybe?
 
 	Consider do we want to try and ensure we don't have backup of logs, or ensure we have consistency between
 		raft log and FSM - Maybe add as an option?
+
+
+
+ENABLE SNAPSHOTS:
+	This is going to be a LONG running daemon. If we allow the log to grow without compaction, we'll get nasty-big log stores. 
