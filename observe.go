@@ -28,7 +28,7 @@ func (rn *Node) observe(data Observation) {
 	rn.observersLock.RLock()
 	defer rn.observersLock.RUnlock()
 	for _, observer := range rn.observers {
-		if observer.filter != nil && !observer.filter(interface{}(&data).(*Observation)) {
+		if observer.filter != nil && !observer.filter(interface{}(data).(Observation)) {
 			continue
 		}
 		if observer.channel == nil {

@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/gorilla/mux"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -17,7 +20,7 @@ func (rn *Node) peerAPI() *mux.Router {
 	r := mux.NewRouter()
 
 	rn.fsm.RegisterAPI(r.PathPrefix(FSMAPIEndpoint).Subrouter())
-	r.HandleFunc(peerAddEndpoint, rn.peerAddHandlerFunc())
+	r.HandleFunc(peerAddEndpoint, rn.peerAddHandlerFunc()).Methods("POST")
 
 	return r
 }
@@ -51,7 +54,7 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 		}
 
-		url := fmt.Sprintf("%s:%s", strings.Split(req.RemoteAddr, ":")[0], addReq.Port)
+		url := fmt.Sprintf("http://%s:%d", strings.Split(req.RemoteAddr, ":")[0], addReq.Port)
 
 		confChange := &raftpb.ConfChange{
 			NodeID:  addReq.ID,
@@ -61,7 +64,8 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 		if err := rn.proposePeerAddition(confChange, false); err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 		}
-		writeSuccess(w)
+
+		writeSuccess(w, rn)
 	} else {
 		writeNodeNotReady(w)
 	}
@@ -79,11 +83,38 @@ func (rn *Node) requestSelfAddition() error {
 		}
 
 		reader := bytes.NewReader(mar)
+		peerAPIURL := fmt.Sprintf("%s%s", peer, peerAddEndpoint)
 
-		_, err = http.Post(peer, "application/json", reader)
+		resp, err := http.Post(peerAPIURL, "application/json", reader)
 		if err != nil {
 			return err
 		}
+
+		defer resp.Body.Close()
+
+		var respData PeerAdditionResponse
+		if err = json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+			return err
+		}
+
+		if respData.Status == PeerAdditionStatusError {
+			return fmt.Errorf("Error %d - %s", resp.StatusCode, respData.Message)
+		}
+
+		// this ought to work since it should be added to cluster now
+		var portID PeerAdditionAddMe
+		if err := json.Unmarshal(respData.Data, &portID); err != nil {
+			return err
+		}
+
+		peerURL, err := url.Parse(peer)
+		if err != nil {
+			return err
+		}
+
+		addURL := fmt.Sprintf("http://%s:%s", strings.Split(peerURL.Host, ":")[0], strconv.Itoa(portID.Port))
+
+		rn.transport.AddPeer(types.ID(portID.ID), []string{addURL})
 
 		//TODO: Determine how errors are returned over http
 		//var respData PeerAdditionResponse
@@ -95,9 +126,15 @@ func (rn *Node) requestSelfAddition() error {
 var PeerAdditionStatusSuccess = "success"
 var PeerAdditionStatusError = "error"
 
+type PeerAdditionAddMe struct {
+	Port int    `json:"port"`
+	ID   uint64 `json:"id"`
+}
+
 type PeerAdditionResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
+	Data    []byte `json:"data,omitempty"`
 }
 
 var PeerAdditionNodeNotReady = "Invalid Node"
@@ -108,10 +145,22 @@ type peerAdditionRequest struct {
 	Port int    `json:"port"`
 }
 
-func writeSuccess(w http.ResponseWriter) {
+func writeSuccess(w http.ResponseWriter, rn *Node) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess})
+
+	addMe := &PeerAdditionAddMe{
+		Port: rn.raftPort,
+		ID:   rn.id,
+	}
+
+	addMeData, err := json.Marshal(addMe)
+	if err != nil {
+		panic(err)
+	}
+
+	json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess, Data: addMeData})
+	//json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess})
 }
 func writeError(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")

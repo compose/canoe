@@ -108,6 +108,7 @@ func nonInitNode(args *NodeConfig) *Node {
 		apiPort:     args.APIPort,
 		fsm:         args.FSM,
 		initialized: false,
+		observers:   make(map[uint64]*Observer),
 	}
 
 	c := &raft.Config{
@@ -160,6 +161,7 @@ func (rn *Node) proposePeerAddition(addReq *raftpb.ConfChange, async bool) error
 	// before asking for node addition
 	if !async {
 		filterFn := func(o Observation) bool {
+
 			switch o.(type) {
 			case raftpb.Entry:
 				entry := o.(raftpb.Entry)
@@ -201,7 +203,7 @@ func (rn *Node) proposePeerAddition(addReq *raftpb.ConfChange, async bool) error
 	case <-observChan:
 		return nil
 	case <-time.After(10 * time.Second):
-		return fmt.Errorf("Timed out waiting for add log to commit")
+		return rn.proposePeerAddition(addReq, async)
 
 	}
 }
