@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-var peerAddEndpoint = "/peerAddition"
+var peerAddEndpoint = "/peers"
 var FSMAPIEndpoint = "/api"
 
 func (rn *Node) peerAPI() *mux.Router {
@@ -123,9 +123,6 @@ func (rn *Node) requestSelfAddition() error {
 			}
 		}
 
-		//TODO: Determine how errors are returned over http
-		//var respData PeerAdditionResponse
-
 	}
 	return nil
 }
@@ -200,7 +197,6 @@ type peerAdditionRequest struct {
 	Port int    `json:"port"`
 }
 
-// TODO: Add all peers in the cluster with this response lest we break things
 func writeSuccess(w http.ResponseWriter, rn *Node) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -220,7 +216,6 @@ func writeSuccess(w http.ResponseWriter, rn *Node) {
 	if err != nil {
 		fmt.Println("ERROROROR", err.Error())
 	}
-	//json.NewEncoder(w).Encode(PeerAdditionResponse{Status: PeerAdditionStatusSuccess})
 }
 func writeError(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")

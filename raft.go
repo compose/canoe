@@ -54,6 +54,7 @@ type NodeConfig struct {
 // This is because each node defines it's own uuid at startup. We must be told this UUID
 // by another node.
 // TODO: Look into which config options we want others to specify. For now hardcoded
+// TODO: Allow user to specify KV pairs of known nodes, and bypass the http discovery
 // NOTE: Peers are used EXCLUSIVELY to round-robin to other nodes and attempt to add
 //		ourselves to an existing cluster or bootstrap node
 func NewNode(args *NodeConfig) (*Node, error) {
@@ -66,6 +67,7 @@ func NewNode(args *NodeConfig) (*Node, error) {
 	return rn, nil
 }
 
+// NOTE: Discuss with others. Should this be blocking, non blocking, or bool to decide?
 func (rn *Node) Start(httpBlock bool) error {
 	if rn.started {
 		return nil
@@ -154,7 +156,7 @@ func nonInitNode(args *NodeConfig) *Node {
 		peerMap:         make(map[uint64]string),
 		initBackoffArgs: args.InitBackoff,
 	}
-
+	//TODO: Fix these magix numbers with user-specifiable config
 	c := &raft.Config{
 		ID:              rn.id,
 		ElectionTick:    10,
@@ -179,7 +181,7 @@ func (rn *Node) attachTransport() error {
 
 	rn.transport = &rafthttp.Transport{
 		ID:          types.ID(rn.id),
-		ClusterID:   0x1000,
+		ClusterID:   0x1000, //TODO: Allow user to specify ClusterID
 		Raft:        rn,
 		ServerStats: ss,
 		LeaderStats: stats.NewLeaderStats(strconv.FormatUint(rn.id, 10)),
