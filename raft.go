@@ -2,12 +2,14 @@ package raftwrapper
 
 import (
 	"fmt"
+	"github.com/cenk/backoff"
 	"github.com/coreos/etcd/etcdserver/stats"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/rafthttp"
 	"golang.org/x/net/context"
+	"log"
 	"strconv"
 	"sync"
 	"time"
@@ -34,6 +36,8 @@ type Node struct {
 
 	observers     map[uint64]*Observer
 	observersLock sync.RWMutex
+
+	initBackoffArgs *InitializationBackoffArgs
 }
 
 type NodeConfig struct {
@@ -42,6 +46,7 @@ type NodeConfig struct {
 	APIPort       int
 	Peers         []string
 	BootstrapNode bool
+	InitBackoff   *InitializationBackoffArgs
 }
 
 // note: peers is only for asking to join the cluster.
@@ -95,22 +100,59 @@ func (rn *Node) Start(httpBlock bool) error {
 	return nil
 }
 
+type InitializationBackoffArgs struct {
+	InitialInterval     time.Duration
+	Multiplier          float64
+	MaxInterval         time.Duration
+	MaxElapsedTime      time.Duration
+	RandomizationFactor float64
+}
+
+func (rn *Node) joinPeers() error {
+	notify := func(err error, t time.Duration) {
+		log.Printf("Couldn't connect to peer: %s Trying again in %v", err.Error(), t)
+	}
+
+	// TODO: Specify the backoff criteria in args
+	expBackoff := backoff.NewExponentialBackOff()
+	if rn.initBackoffArgs != nil {
+		expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
+		expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
+		expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
+		expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
+		expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
+	} else {
+		expBackoff.InitialInterval = 500 * time.Millisecond
+		expBackoff.RandomizationFactor = .5
+		expBackoff.Multiplier = 2
+		expBackoff.MaxInterval = 5 * time.Second
+		expBackoff.MaxElapsedTime = 2 * time.Minute
+	}
+
+	op := func() error {
+		return rn.requestSelfAddition()
+	}
+
+	return backoff.RetryNotify(op, expBackoff, notify)
+}
+
 func nonInitNode(args *NodeConfig) *Node {
 	if args.BootstrapNode {
 		args.Peers = nil
 	}
 	rn := &Node{
-		proposeC:    make(chan string),
-		cluster:     0x1000,
-		raftStorage: raft.NewMemoryStorage(),
-		peers:       args.Peers,
-		id:          Uint64UUID(),
-		raftPort:    args.RaftPort,
-		apiPort:     args.APIPort,
-		fsm:         args.FSM,
-		initialized: false,
-		observers:   make(map[uint64]*Observer),
-		peerMap:     make(map[uint64]string),
+		proposeC:        make(chan string),
+		cluster:         0x1000,
+		raftStorage:     raft.NewMemoryStorage(),
+		peers:           args.Peers,
+		id:              Uint64UUID(),
+		raftPort:        args.RaftPort,
+		apiPort:         args.APIPort,
+		fsm:             args.FSM,
+		initialized:     false,
+		observers:       make(map[uint64]*Observer),
+		peerMap:         make(map[uint64]string),
+		initBackoffArgs: args.InitBackoff,
 	}
 
 	c := &raft.Config{
@@ -144,14 +186,6 @@ func (rn *Node) attachTransport() error {
 		ErrorC:      make(chan error),
 	}
 
-	return nil
-}
-
-func (rn *Node) joinPeers() error {
-	err := rn.requestSelfAddition()
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
