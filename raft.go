@@ -1,6 +1,7 @@
 package raftwrapper
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/cenk/backoff"
 	"github.com/coreos/etcd/etcdserver/stats"
@@ -22,7 +23,7 @@ type Node struct {
 	raftStorage *raft.MemoryStorage
 	transport   *rafthttp.Transport
 	peers       []string
-	peerMap     map[uint64]string
+	peerMap     map[uint64]confChangeNodeContext
 	id          uint64
 	raftPort    int
 	cluster     int
@@ -38,6 +39,8 @@ type Node struct {
 	observersLock sync.RWMutex
 
 	initBackoffArgs *InitializationBackoffArgs
+
+	stopc chan struct{}
 }
 
 type NodeConfig struct {
@@ -72,6 +75,7 @@ func (rn *Node) Start(httpBlock bool) error {
 	if rn.started {
 		return nil
 	}
+	rn.stopc = make(chan struct{})
 
 	var wg sync.WaitGroup
 
@@ -91,7 +95,7 @@ func (rn *Node) Start(httpBlock bool) error {
 
 	go rn.serveRaft()
 
-	if err := rn.joinPeers(); err != nil {
+	if err := rn.addSelfToCluster(); err != nil {
 		return err
 	}
 	// final step to mark node as initialized
@@ -99,6 +103,16 @@ func (rn *Node) Start(httpBlock bool) error {
 	rn.initialized = true
 	rn.started = true
 	wg.Wait()
+	return nil
+}
+
+func (rn *Node) Stop() error {
+	if err := rn.removeSelfFromCluster(); err != nil {
+		return err
+	}
+	close(rn.stopc)
+	rn.started = false
+	rn.initialized = false
 	return nil
 }
 
@@ -110,12 +124,38 @@ type InitializationBackoffArgs struct {
 	RandomizationFactor float64
 }
 
-func (rn *Node) joinPeers() error {
+func (rn *Node) removeSelfFromCluster() error {
 	notify := func(err error, t time.Duration) {
-		log.Printf("Couldn't connect to peer: %s Trying again in %v", err.Error(), t)
+		log.Printf("Couldn't remove self from cluster: %s Trying again in %v", err.Error(), t)
 	}
 
-	// TODO: Specify the backoff criteria in args
+	expBackoff := backoff.NewExponentialBackOff()
+	if rn.initBackoffArgs != nil {
+		expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
+		expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
+		expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
+		expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
+		expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
+	} else {
+		expBackoff.InitialInterval = 500 * time.Millisecond
+		expBackoff.RandomizationFactor = .5
+		expBackoff.Multiplier = 2
+		expBackoff.MaxInterval = 5 * time.Second
+		expBackoff.MaxElapsedTime = 2 * time.Minute
+	}
+
+	op := func() error {
+		return rn.requestSelfDeletion()
+	}
+
+	return backoff.RetryNotify(op, expBackoff, notify)
+}
+
+func (rn *Node) addSelfToCluster() error {
+	notify := func(err error, t time.Duration) {
+		log.Printf("Couldn't add self to cluster: %s Trying again in %v", err.Error(), t)
+	}
+
 	expBackoff := backoff.NewExponentialBackOff()
 	if rn.initBackoffArgs != nil {
 		expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
@@ -153,7 +193,7 @@ func nonInitNode(args *NodeConfig) *Node {
 		fsm:             args.FSM,
 		initialized:     false,
 		observers:       make(map[uint64]*Observer),
-		peerMap:         make(map[uint64]string),
+		peerMap:         make(map[uint64]confChangeNodeContext),
 		initBackoffArgs: args.InitBackoff,
 	}
 	//TODO: Fix these magix numbers with user-specifiable config
@@ -246,7 +286,61 @@ func (rn *Node) proposePeerAddition(addReq *raftpb.ConfChange, async bool) error
 	}
 }
 
-func (rn *Node) canAddPeer() bool {
+func (rn *Node) proposePeerDeletion(delReq *raftpb.ConfChange, async bool) error {
+	delReq.Type = raftpb.ConfChangeRemoveNode
+
+	observChan := make(chan Observation)
+	// setup listener for node addition
+	// before asking for node addition
+	if !async {
+		filterFn := func(o Observation) bool {
+			switch o.(type) {
+			case raftpb.Entry:
+				entry := o.(raftpb.Entry)
+				switch entry.Type {
+				case raftpb.EntryConfChange:
+					var cc raftpb.ConfChange
+					cc.Unmarshal(entry.Data)
+					rn.node.ApplyConfChange(cc)
+					switch cc.Type {
+					case raftpb.ConfChangeRemoveNode:
+						// wait until we get a matching node id
+						return delReq.NodeID == cc.NodeID
+					default:
+						return false
+					}
+				default:
+					return false
+				}
+			default:
+				return false
+			}
+		}
+
+		observer := NewObserver(observChan, filterFn)
+		rn.RegisterObserver(observer)
+		defer rn.UnregisterObserver(observer)
+	}
+
+	if err := rn.node.ProposeConfChange(context.TODO(), *delReq); err != nil {
+		return err
+	}
+
+	if async {
+		return nil
+	}
+
+	// TODO: Do a retry here on failure for x retries
+	select {
+	case <-observChan:
+		return nil
+	case <-time.After(10 * time.Second):
+		return rn.proposePeerDeletion(delReq, async)
+
+	}
+}
+
+func (rn *Node) canAlterPeer() bool {
 	return rn.isHealthy() && rn.initialized
 }
 
@@ -261,6 +355,8 @@ func (rn *Node) scanReady() {
 
 	for {
 		select {
+		case <-rn.stopc:
+			return
 		case <-ticker.C:
 			rn.node.Tick()
 		case rd := <-rn.node.Ready():
@@ -273,6 +369,12 @@ func (rn *Node) scanReady() {
 			rn.node.Advance()
 		}
 	}
+}
+
+type confChangeNodeContext struct {
+	IP       string
+	RaftPort int
+	APIPort  int
 }
 
 func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
@@ -297,8 +399,15 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
-					rn.transport.AddPeer(types.ID(cc.NodeID), []string{string(cc.Context)})
-					rn.peerMap[cc.NodeID] = string(cc.Context)
+					var ctxData confChangeNodeContext
+					if err := json.Unmarshal(cc.Context, &ctxData); err != nil {
+						return false
+					}
+
+					raftURL := fmt.Sprintf("http://%s:%d", ctxData.IP, ctxData.RaftPort)
+
+					rn.transport.AddPeer(types.ID(cc.NodeID), []string{raftURL})
+					rn.peerMap[cc.NodeID] = ctxData
 				}
 			case raftpb.ConfChangeRemoveNode:
 				if cc.NodeID == uint64(rn.id) {
@@ -306,6 +415,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 					return false
 				}
 				rn.transport.RemovePeer(types.ID(cc.NodeID))
+				delete(rn.peerMap, cc.NodeID)
 			}
 
 		}
