@@ -19,14 +19,14 @@ import (
 type LogData []byte
 
 type Node struct {
-	node        raft.Node
-	raftStorage *raft.MemoryStorage
-	transport   *rafthttp.Transport
-	peers       []string
-	peerMap     map[uint64]confChangeNodeContext
-	id          uint64
-	raftPort    int
-	cluster     int
+	node           raft.Node
+	raftStorage    *raft.MemoryStorage
+	transport      *rafthttp.Transport
+	bootstrapPeers []string
+	peerMap        map[uint64]confChangeNodeContext
+	id             uint64
+	raftPort       int
+	cluster        int
 
 	apiPort int
 
@@ -39,17 +39,59 @@ type Node struct {
 	observersLock sync.RWMutex
 
 	initBackoffArgs *InitializationBackoffArgs
+	snapshotConfig  *SnapshotConfig
+
+	lastConfState *raftpb.ConfState
 
 	stopc chan struct{}
 }
 
 type NodeConfig struct {
-	FSM           FSM
-	RaftPort      int
-	APIPort       int
-	Peers         []string
-	BootstrapNode bool
-	InitBackoff   *InitializationBackoffArgs
+	FSM            FSM
+	RaftPort       int
+	APIPort        int
+	BootstrapPeers []string
+	BootstrapNode  bool
+	InitBackoff    *InitializationBackoffArgs
+	// if nil, then default to no snapshotting
+	SnapshotConfig *SnapshotConfig
+}
+
+type SnapshotConfig struct {
+
+	// How often do you want to Snapshot and compact logs?
+	Interval time.Duration
+
+	// If the interval ticks but not enough logs have been commited then ignore
+	// the snapshot this interval
+	MinCommittedLogs uint64
+
+	// If the interval hasn't ticked but we've gone over a commited log threshold then snapshot
+	// Note: Use this with care. Snapshotting is a fairly expenseive process.
+	// Interval is suggested best method for triggering snapshots
+	MaxCommittedLogs uint64
+}
+
+var DefaultSnapshotConfig = &SnapshotConfig{
+	Interval:         -1 * time.Second,
+	MinCommittedLogs: 0,
+	MaxCommittedLogs: 0,
+}
+
+type InitializationBackoffArgs struct {
+	InitialInterval     time.Duration
+	Multiplier          float64
+	MaxInterval         time.Duration
+	MaxElapsedTime      time.Duration
+	RandomizationFactor float64
+}
+
+var DefaultInitializationBackoffArgs = &InitializationBackoffArgs{
+	InitialInterval:     500 * time.Millisecond,
+	RandomizationFactor: .5,
+	Multiplier:          2,
+	MaxInterval:         5 * time.Second,
+	MaxElapsedTime:      2 * time.Minute,
 }
 
 // note: peers is only for asking to join the cluster.
@@ -116,33 +158,18 @@ func (rn *Node) Stop() error {
 	return nil
 }
 
-type InitializationBackoffArgs struct {
-	InitialInterval     time.Duration
-	Multiplier          float64
-	MaxInterval         time.Duration
-	MaxElapsedTime      time.Duration
-	RandomizationFactor float64
-}
-
 func (rn *Node) removeSelfFromCluster() error {
 	notify := func(err error, t time.Duration) {
 		log.Printf("Couldn't remove self from cluster: %s Trying again in %v", err.Error(), t)
 	}
 
 	expBackoff := backoff.NewExponentialBackOff()
-	if rn.initBackoffArgs != nil {
-		expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
-		expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
-		expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
-		expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
-		expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
-	} else {
-		expBackoff.InitialInterval = 500 * time.Millisecond
-		expBackoff.RandomizationFactor = .5
-		expBackoff.Multiplier = 2
-		expBackoff.MaxInterval = 5 * time.Second
-		expBackoff.MaxElapsedTime = 2 * time.Minute
-	}
+
+	expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
+	expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
+	expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
+	expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
+	expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
 
 	op := func() error {
 		return rn.requestSelfDeletion()
@@ -157,19 +184,11 @@ func (rn *Node) addSelfToCluster() error {
 	}
 
 	expBackoff := backoff.NewExponentialBackOff()
-	if rn.initBackoffArgs != nil {
-		expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
-		expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
-		expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
-		expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
-		expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
-	} else {
-		expBackoff.InitialInterval = 500 * time.Millisecond
-		expBackoff.RandomizationFactor = .5
-		expBackoff.Multiplier = 2
-		expBackoff.MaxInterval = 5 * time.Second
-		expBackoff.MaxElapsedTime = 2 * time.Minute
-	}
+	expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
+	expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
+	expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
+	expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
+	expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
 
 	op := func() error {
 		return rn.requestSelfAddition()
@@ -180,13 +199,22 @@ func (rn *Node) addSelfToCluster() error {
 
 func nonInitNode(args *NodeConfig) *Node {
 	if args.BootstrapNode {
-		args.Peers = nil
+		args.BootstrapPeers = nil
 	}
+
+	if args.InitBackoff == nil {
+		args.InitBackoff = DefaultInitializationBackoffArgs
+	}
+
+	if args.SnapshotConfig == nil {
+		args.SnapshotConfig = DefaultSnapshotConfig
+	}
+
 	rn := &Node{
 		proposeC:        make(chan string),
 		cluster:         0x1000,
 		raftStorage:     raft.NewMemoryStorage(),
-		peers:           args.Peers,
+		bootstrapPeers:  args.BootstrapPeers,
 		id:              Uint64UUID(),
 		raftPort:        args.RaftPort,
 		apiPort:         args.APIPort,
@@ -195,6 +223,7 @@ func nonInitNode(args *NodeConfig) *Node {
 		observers:       make(map[uint64]*Observer),
 		peerMap:         make(map[uint64]confChangeNodeContext),
 		initBackoffArgs: args.InitBackoff,
+		snapshotConfig:  args.SnapshotConfig,
 	}
 	//TODO: Fix these magix numbers with user-specifiable config
 	c := &raft.Config{
@@ -350,6 +379,16 @@ func (rn *Node) isHealthy() bool {
 }
 
 func (rn *Node) scanReady() {
+	var snapTicker *time.Ticker
+
+	// if non-interval based then create a ticker which will never post to a chan
+	if rn.snapshotConfig.Interval <= 0 {
+		snapTicker = time.NewTicker(1 * time.Second)
+		snapTicker.Stop()
+	} else {
+		snapTicker = time.NewTicker(rn.snapshotConfig.Interval)
+	}
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -359,16 +398,86 @@ func (rn *Node) scanReady() {
 			return
 		case <-ticker.C:
 			rn.node.Tick()
+		case <-snapTicker.C:
+			// TODO: Should we compact when creating?
+			// Or should we leave that to when one is applied?
+			if err := rn.createSnapAndCompact(); err != nil {
+				return
+			}
+			first, _ := rn.raftStorage.FirstIndex()
+			last, _ := rn.raftStorage.LastIndex()
+			fmt.Printf("Last Index: %d\n", last)
+			fmt.Printf("First Index: %d\n", first)
+			fmt.Printf("Applied: %d\n", rn.node.Status().Applied)
+			fmt.Println("Snapshot Created!")
 		case rd := <-rn.node.Ready():
 			rn.raftStorage.Append(rd.Entries)
 			rn.transport.Send(rd.Messages)
+
+			if !raft.IsEmptySnap(rd.Snapshot) {
+				if err := rn.processSnapshot(rd.Snapshot); err != nil {
+					rn.ReportSnapshot(rn.id, raft.SnapshotFailure)
+					fmt.Println("Failed Snapshot")
+					return
+				}
+			}
+
 			if ok := rn.publishEntries(rd.CommittedEntries); !ok {
 				return
 			}
 
 			rn.node.Advance()
+
 		}
 	}
+}
+
+func (rn *Node) processSnapshot(snap raftpb.Snapshot) error {
+	if err := rn.raftStorage.ApplySnapshot(snap); err != nil {
+		return err
+	}
+	if err := rn.fsm.Restore(SnapshotData(snap.Data)); err != nil {
+		return err
+	}
+
+	rn.ReportSnapshot(rn.id, raft.SnapshotFinish)
+
+	fmt.Println("Restored Snapshot!")
+	return nil
+}
+
+func (rn *Node) createSnapAndCompact() error {
+	index := rn.node.Status().Applied
+
+	data, err := rn.fsm.Snapshot()
+	if err != nil {
+		return err
+	}
+
+	snap, err := rn.raftStorage.CreateSnapshot(index, rn.lastConfState, []byte(data))
+	if err != nil {
+		return err
+	}
+
+	if err = rn.raftStorage.Compact(snap.Metadata.Index - 1); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (rn *Node) commitsSinceLastSnap() uint64 {
+	snap, err := rn.raftStorage.Snapshot()
+	if err != nil {
+		// this should NEVER err
+		panic(err)
+	}
+	curIndex, err := rn.raftStorage.LastIndex()
+	if err != nil {
+		// this should NEVER err
+		panic(err)
+	}
+	return curIndex - snap.Metadata.Index
 }
 
 type confChangeNodeContext struct {
@@ -394,7 +503,8 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 		case raftpb.EntryConfChange:
 			var cc raftpb.ConfChange
 			cc.Unmarshal(entry.Data)
-			rn.node.ApplyConfChange(cc)
+			confState := rn.node.ApplyConfChange(cc)
+			rn.lastConfState = confState
 
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:

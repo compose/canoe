@@ -148,7 +148,7 @@ func (rn *Node) requestSelfAddition() error {
 		APIPort:  rn.apiPort,
 	}
 
-	for _, peer := range rn.peers {
+	for _, peer := range rn.bootstrapPeers {
 		mar, err := json.Marshal(reqData)
 		if err != nil {
 			return err
@@ -187,7 +187,7 @@ func (rn *Node) requestSelfAddition() error {
 
 			rn.transport.AddPeer(types.ID(peerData.ID), []string{addURL})
 			rn.peerMap[peerData.ID] = confChangeNodeContext{
-				IP:       peerURL.Host,
+				IP:       strings.Split(peerURL.Host, ":")[0],
 				RaftPort: peerData.RaftPort,
 				APIPort:  peerData.APIPort,
 			}
