@@ -151,6 +151,7 @@ func (rn *Node) requestSelfAddition() error {
 	for _, peer := range rn.bootstrapPeers {
 		mar, err := json.Marshal(reqData)
 		if err != nil {
+			continue
 			return err
 		}
 
@@ -159,12 +160,14 @@ func (rn *Node) requestSelfAddition() error {
 
 		resp, err = http.Post(peerAPIURL, "application/json", reader)
 		if err != nil {
+			continue
 			return err
 		}
 
 		defer resp.Body.Close()
 
 		if err = json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+			continue
 			return err
 		}
 
@@ -180,6 +183,7 @@ func (rn *Node) requestSelfAddition() error {
 
 			peerURL, err := url.Parse(peer)
 			if err != nil {
+				continue
 				return err
 			}
 
