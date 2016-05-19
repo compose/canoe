@@ -28,8 +28,6 @@ type walMetadata struct {
 // 7: If old wal then restart Node. Otherwise just start
 // TODO: Add old peers to Transport
 func (rn *Node) restoreRaft() error {
-	oldWAL := wal.Exist(rn.walDir())
-
 	raftSnap, err := rn.initSnap()
 	if err != nil {
 		return err
@@ -70,16 +68,6 @@ func (rn *Node) restoreRaft() error {
 		}
 	}
 
-	// NOTE: Step 7
-	if oldWAL {
-		rn.node = raft.RestartNode(rn.raftConfig)
-	} else {
-		if rn.bootstrapNode {
-			rn.node = raft.StartNode(rn.raftConfig, []raft.Peer{raft.Peer{ID: rn.id}})
-		} else {
-			rn.node = raft.StartNode(rn.raftConfig, nil)
-		}
-	}
 	return nil
 }
 
@@ -162,6 +150,7 @@ func (rn *Node) openWAL(walSnap walpb.Snapshot) error {
 		}
 	}
 
+	// TODO: setup logging
 	fmt.Println("WAL Repair.  ", wal.Repair(rn.walDir()))
 
 	w, err := wal.Open(rn.walDir(), walSnap)

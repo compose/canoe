@@ -143,14 +143,42 @@ func NewNode(args *NodeConfig) (*Node, error) {
 	return rn, nil
 }
 
+func (rn *Node) shouldRejoinCluster() bool {
+	return wal.Exist(rn.walDir()) && rn.walDir() != ""
+}
+
+func (rn *Node) advanceTicksForElection() error {
+	for i := 0; i < rn.raftConfig.ElectionTick-1; i++ {
+		rn.node.Tick()
+	}
+	return nil
+}
+
 // TODO: Don't panic on these. Return an err if they happen
 func (rn *Node) Start() error {
+	walEnabled := rn.walDir() != ""
+	rejoinCluster := rn.shouldRejoinCluster()
 	if rn.started {
 		return nil
 	}
 	rn.stopc = make(chan struct{})
 
-	if err := rn.restoreRaft(); err != nil {
+	if walEnabled {
+		if err := rn.restoreRaft(); err != nil {
+			return err
+		}
+	}
+
+	if rejoinCluster {
+		rn.node = raft.RestartNode(rn.raftConfig)
+	} else {
+		if rn.bootstrapNode {
+			rn.node = raft.StartNode(rn.raftConfig, []raft.Peer{raft.Peer{ID: rn.id}})
+		} else {
+			rn.node = raft.StartNode(rn.raftConfig, nil)
+		}
+	}
+	if err := rn.advanceTicksForElection(); err != nil {
 		return err
 	}
 
@@ -179,11 +207,14 @@ func (rn *Node) Start() error {
 	}(rn)
 	rn.started = true
 
-	// TODO: Make new endpoint to find members.
-	// Then only use addSelfToCluster when needed.
-	// Call members endpoint when restoring
-	if err := rn.addSelfToCluster(); err != nil {
-		return err
+	if rejoinCluster {
+		if err := rn.selfRejoinCluster(); err != nil {
+			return err
+		}
+	} else {
+		if err := rn.addSelfToCluster(); err != nil {
+			return err
+		}
 	}
 	// final step to mark node as initialized
 	// TODO: Find a better place to mark initialized
@@ -264,6 +295,25 @@ func (rn *Node) addSelfToCluster() error {
 
 	op := func() error {
 		return rn.requestSelfAddition()
+	}
+
+	return backoff.RetryNotify(op, expBackoff, notify)
+}
+
+func (rn *Node) selfRejoinCluster() error {
+	notify := func(err error, t time.Duration) {
+		log.Printf("Couldn't join cluster: %s Trying again in %v", err.Error(), t)
+	}
+
+	expBackoff := backoff.NewExponentialBackOff()
+	expBackoff.InitialInterval = rn.initBackoffArgs.InitialInterval
+	expBackoff.RandomizationFactor = rn.initBackoffArgs.RandomizationFactor
+	expBackoff.Multiplier = rn.initBackoffArgs.Multiplier
+	expBackoff.MaxInterval = rn.initBackoffArgs.MaxInterval
+	expBackoff.MaxElapsedTime = rn.initBackoffArgs.MaxElapsedTime
+
+	op := func() error {
+		return rn.requestRejoinCluster()
 	}
 
 	return backoff.RetryNotify(op, expBackoff, notify)
@@ -536,6 +586,14 @@ func (rn *Node) processSnapshot(raftSnap raftpb.Snapshot) error {
 
 func (rn *Node) createSnapAndCompact() error {
 	index := rn.node.Status().Applied
+	lastSnap, err := rn.raftStorage.Snapshot()
+	if err != nil {
+		return err
+	}
+
+	if index <= lastSnap.Metadata.Index {
+		return nil
+	}
 
 	data, err := rn.fsm.Snapshot()
 	if err != nil {
@@ -608,8 +666,9 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 
 					raftURL := fmt.Sprintf("http://%s:%d", ctxData.IP, ctxData.RaftPort)
 
-					rn.transport.AddPeer(types.ID(cc.NodeID), []string{raftURL})
-					fmt.Printf("Adding peer from conf change: %x\n", cc.NodeID)
+					if cc.NodeID != rn.id {
+						rn.transport.AddPeer(types.ID(cc.NodeID), []string{raftURL})
+					}
 					rn.peerMap[cc.NodeID] = ctxData
 				}
 			case raftpb.ConfChangeRemoveNode:
@@ -634,6 +693,7 @@ func (rn *Node) Propose(data []byte) error {
 func (rn *Node) Process(ctx context.Context, m raftpb.Message) error {
 	return rn.node.Step(ctx, m)
 }
+
 func (rn *Node) IsIDRemoved(id uint64) bool {
 	return false
 }
