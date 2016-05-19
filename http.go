@@ -26,7 +26,7 @@ func (rn *Node) peerAPI() *mux.Router {
 	return r
 }
 
-func (rn *Node) serveHTTP() {
+func (rn *Node) serveHTTP() error {
 	router := rn.peerAPI()
 
 	ln, err := newStoppableListener(fmt.Sprintf(":%d", rn.apiPort), rn.stopc)
@@ -37,23 +37,25 @@ func (rn *Node) serveHTTP() {
 	err = (&http.Server{Handler: router}).Serve(ln)
 	select {
 	case <-rn.stopc:
+		return nil
 	default:
-		panic(err)
+		return err
 	}
 }
 
-func (rn *Node) serveRaft() {
+func (rn *Node) serveRaft() error {
 	ln, err := newStoppableListener(fmt.Sprintf(":%d", rn.raftPort), rn.stopc)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	err = (&http.Server{Handler: rn.transport.Handler()}).Serve(ln)
 
 	select {
 	case <-rn.stopc:
+		return nil
 	default:
-		panic(err)
+		return err
 	}
 }
 

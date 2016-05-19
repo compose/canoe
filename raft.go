@@ -2,38 +2,54 @@ package raftwrapper
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/cenk/backoff"
-	"github.com/coreos/etcd/etcdserver/stats"
-	"github.com/coreos/etcd/pkg/types"
-	"github.com/coreos/etcd/raft"
-	"github.com/coreos/etcd/raft/raftpb"
-	"github.com/coreos/etcd/rafthttp"
 	"golang.org/x/net/context"
 	"log"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/cenk/backoff"
+
+	"github.com/coreos/etcd/etcdserver/stats"
+	"github.com/coreos/etcd/pkg/types"
+	"github.com/coreos/etcd/raft"
+	"github.com/coreos/etcd/raft/raftpb"
+	"github.com/coreos/etcd/rafthttp"
+	"github.com/coreos/etcd/snap"
+	"github.com/coreos/etcd/wal"
 )
 
 type LogData []byte
+
+// because WAL and Snap look to see if ANY files exist in the dir
+// for confirmation. Meaning that if one or the other is enabled
+// but not the other, then checks will fail
+var walDirExtension = "/wal"
+var snapDirExtension = "/snap"
 
 type Node struct {
 	node           raft.Node
 	raftStorage    *raft.MemoryStorage
 	transport      *rafthttp.Transport
 	bootstrapPeers []string
+	bootstrapNode  bool
 	peerMap        map[uint64]confChangeNodeContext
 	id             uint64
+	cid            uint64
 	raftPort       int
-	cluster        int
 
 	apiPort int
 
+	raftConfig *raft.Config
+
 	started     bool
 	initialized bool
-	proposeC    chan string
-	fsm         FSM
+	running     bool
+
+	proposeC chan string
+	fsm      FSM
 
 	observers     map[uint64]*Observer
 	observersLock sync.RWMutex
@@ -41,18 +57,34 @@ type Node struct {
 	initBackoffArgs *InitializationBackoffArgs
 	snapshotConfig  *SnapshotConfig
 
+	dataDir string
+	ss      *snap.Snapshotter
+	wal     *wal.WAL
+
 	lastConfState *raftpb.ConfState
 
 	stopc chan struct{}
 }
 
 type NodeConfig struct {
+	// If not specified or 0, will autogenerate a new UUID
+	ID uint64
+
+	// If not specified 0x100 will be used
+	ClusterID uint64
+
 	FSM            FSM
 	RaftPort       int
 	APIPort        int
 	BootstrapPeers []string
 	BootstrapNode  bool
-	InitBackoff    *InitializationBackoffArgs
+
+	// DataDir is where your data will be persisted to disk
+	// for use when either you need to restart a node, or
+	// it goes offline and needs to be restarted
+	DataDir string
+
+	InitBackoff *InitializationBackoffArgs
 	// if nil, then default to no snapshotting
 	SnapshotConfig *SnapshotConfig
 }
@@ -103,23 +135,28 @@ var DefaultInitializationBackoffArgs = &InitializationBackoffArgs{
 // NOTE: Peers are used EXCLUSIVELY to round-robin to other nodes and attempt to add
 //		ourselves to an existing cluster or bootstrap node
 func NewNode(args *NodeConfig) (*Node, error) {
-	rn := nonInitNode(args)
-
-	if err := rn.attachTransport(); err != nil {
+	rn, err := nonInitNode(args)
+	if err != nil {
 		return nil, err
 	}
 
 	return rn, nil
 }
 
-// NOTE: Discuss with others. Should this be blocking, non blocking, or bool to decide?
-func (rn *Node) Start(httpBlock bool) error {
+// TODO: Don't panic on these. Return an err if they happen
+func (rn *Node) Start() error {
 	if rn.started {
 		return nil
 	}
 	rn.stopc = make(chan struct{})
 
-	var wg sync.WaitGroup
+	if err := rn.restoreRaft(); err != nil {
+		return err
+	}
+
+	if err := rn.attachTransport(); err != nil {
+		return err
+	}
 
 	if err := rn.transport.Start(); err != nil {
 		return err
@@ -127,32 +164,67 @@ func (rn *Node) Start(httpBlock bool) error {
 
 	go rn.scanReady()
 
-	if httpBlock {
-		wg.Add(1)
-	}
+	// Start config http service
 	go func(rn *Node) {
-		defer wg.Done()
-		rn.serveHTTP()
+		if err := rn.serveHTTP(); err != nil {
+			panic(err)
+		}
 	}(rn)
 
-	go rn.serveRaft()
+	// start raft
+	go func(rn *Node) {
+		if err := rn.serveRaft(); err != nil {
+			panic(err)
+		}
+	}(rn)
+	rn.started = true
 
+	// TODO: Make new endpoint to find members.
+	// Then only use addSelfToCluster when needed.
+	// Call members endpoint when restoring
 	if err := rn.addSelfToCluster(); err != nil {
 		return err
 	}
 	// final step to mark node as initialized
 	// TODO: Find a better place to mark initialized
 	rn.initialized = true
-	rn.started = true
-	wg.Wait()
+	rn.running = true
 	return nil
 }
 
+func (rn *Node) IsRunning() bool {
+	return rn.running
+}
+
 func (rn *Node) Stop() error {
+	close(rn.stopc)
+	rn.transport.Stop()
+	// TODO: Don't poll stuff here
+	for rn.running {
+		time.Sleep(200 * time.Millisecond)
+	}
+	rn.started = false
+	rn.initialized = false
+	return nil
+}
+
+// Destroy is a HARD stop. It first reconfigures the raft cluster
+// to remove itself(ONLY do this if you are intending to permenantly leave the cluster and know consequences around consensus) - read the raft paper's reconfiguration section before using this
+// It then halts all running goroutines
+//
+// WARNING! - Destroy will recursively remove everything under <DataDir>/snap and <DataDir>/wal
+func (rn *Node) Destroy() error {
 	if err := rn.removeSelfFromCluster(); err != nil {
 		return err
 	}
 	close(rn.stopc)
+	rn.transport.Stop()
+	// TODO: Have a stopped chan for triggering this action
+	for rn.running {
+		time.Sleep(200 * time.Millisecond)
+	}
+	rn.deletePersistentData()
+	rn.running = false
 	rn.started = false
 	rn.initialized = false
 	return nil
@@ -197,7 +269,7 @@ func (rn *Node) addSelfToCluster() error {
 	return backoff.RetryNotify(op, expBackoff, notify)
 }
 
-func nonInitNode(args *NodeConfig) *Node {
+func nonInitNode(args *NodeConfig) (*Node, error) {
 	if args.BootstrapNode {
 		args.BootstrapPeers = nil
 	}
@@ -212,10 +284,11 @@ func nonInitNode(args *NodeConfig) *Node {
 
 	rn := &Node{
 		proposeC:        make(chan string),
-		cluster:         0x1000,
 		raftStorage:     raft.NewMemoryStorage(),
 		bootstrapPeers:  args.BootstrapPeers,
-		id:              Uint64UUID(),
+		bootstrapNode:   args.BootstrapNode,
+		id:              args.ID,
+		cid:             args.ClusterID,
 		raftPort:        args.RaftPort,
 		apiPort:         args.APIPort,
 		fsm:             args.FSM,
@@ -224,24 +297,28 @@ func nonInitNode(args *NodeConfig) *Node {
 		peerMap:         make(map[uint64]confChangeNodeContext),
 		initBackoffArgs: args.InitBackoff,
 		snapshotConfig:  args.SnapshotConfig,
+		dataDir:         args.DataDir,
 	}
+
+	if rn.id == 0 {
+		rn.id = Uint64UUID()
+	}
+	if rn.cid == 0 {
+		rn.cid = 0x100
+	}
+
 	//TODO: Fix these magix numbers with user-specifiable config
-	c := &raft.Config{
+	rn.raftConfig = &raft.Config{
 		ID:              rn.id,
 		ElectionTick:    10,
 		HeartbeatTick:   1,
 		Storage:         rn.raftStorage,
 		MaxSizePerMsg:   1024 * 1024,
 		MaxInflightMsgs: 256,
+		CheckQuorum:     true,
 	}
 
-	if args.BootstrapNode {
-		rn.node = raft.StartNode(c, []raft.Peer{raft.Peer{ID: rn.id}})
-	} else {
-		rn.node = raft.StartNode(c, nil)
-	}
-
-	return rn
+	return rn, nil
 }
 
 func (rn *Node) attachTransport() error {
@@ -250,8 +327,9 @@ func (rn *Node) attachTransport() error {
 
 	rn.transport = &rafthttp.Transport{
 		ID:          types.ID(rn.id),
-		ClusterID:   0x1000, //TODO: Allow user to specify ClusterID
+		ClusterID:   types.ID(rn.cid),
 		Raft:        rn,
+		Snapshotter: rn.ss,
 		ServerStats: ss,
 		LeaderStats: stats.NewLeaderStats(strconv.FormatUint(rn.id, 10)),
 		ErrorC:      make(chan error),
@@ -305,13 +383,11 @@ func (rn *Node) proposePeerAddition(addReq *raftpb.ConfChange, async bool) error
 		return nil
 	}
 
-	// TODO: Do a retry here on failure for x retries
 	select {
 	case <-observChan:
 		return nil
 	case <-time.After(10 * time.Second):
-		return rn.proposePeerAddition(addReq, async)
-
+		return errors.New("Timed out waiting for config change")
 	}
 }
 
@@ -359,7 +435,6 @@ func (rn *Node) proposePeerDeletion(delReq *raftpb.ConfChange, async bool) error
 		return nil
 	}
 
-	// TODO: Do a retry here on failure for x retries
 	select {
 	case <-observChan:
 		return nil
@@ -375,10 +450,15 @@ func (rn *Node) canAlterPeer() bool {
 
 // TODO: Define healthy
 func (rn *Node) isHealthy() bool {
-	return true
+	return rn.running
 }
 
 func (rn *Node) scanReady() {
+	defer rn.wal.Close()
+	defer func(rn *Node) {
+		rn.running = false
+	}(rn)
+
 	var snapTicker *time.Ticker
 
 	// if non-interval based then create a ticker which will never post to a chan
@@ -399,25 +479,18 @@ func (rn *Node) scanReady() {
 		case <-ticker.C:
 			rn.node.Tick()
 		case <-snapTicker.C:
-			// TODO: Should we compact when creating?
-			// Or should we leave that to when one is applied?
 			if err := rn.createSnapAndCompact(); err != nil {
 				return
 			}
-			first, _ := rn.raftStorage.FirstIndex()
-			last, _ := rn.raftStorage.LastIndex()
-			fmt.Printf("Last Index: %d\n", last)
-			fmt.Printf("First Index: %d\n", first)
-			fmt.Printf("Applied: %d\n", rn.node.Status().Applied)
-			fmt.Println("Snapshot Created!")
 		case rd := <-rn.node.Ready():
+			if rn.wal != nil {
+				rn.wal.Save(rd.HardState, rd.Entries)
+			}
 			rn.raftStorage.Append(rd.Entries)
 			rn.transport.Send(rd.Messages)
 
 			if !raft.IsEmptySnap(rd.Snapshot) {
 				if err := rn.processSnapshot(rd.Snapshot); err != nil {
-					rn.ReportSnapshot(rn.id, raft.SnapshotFailure)
-					fmt.Println("Failed Snapshot")
 					return
 				}
 			}
@@ -432,17 +505,32 @@ func (rn *Node) scanReady() {
 	}
 }
 
-func (rn *Node) processSnapshot(snap raftpb.Snapshot) error {
-	if err := rn.raftStorage.ApplySnapshot(snap); err != nil {
+func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
+	if raft.IsEmptySnap(raftSnap) {
+		return nil
+	}
+
+	if err := rn.fsm.Restore(SnapshotData(raftSnap.Data)); err != nil {
 		return err
 	}
-	if err := rn.fsm.Restore(SnapshotData(snap.Data)); err != nil {
+
+	return nil
+}
+
+func (rn *Node) processSnapshot(raftSnap raftpb.Snapshot) error {
+	if err := rn.restoreFSMFromSnapshot(raftSnap); err != nil {
+		return err
+	}
+
+	if err := rn.persistSnapshot(raftSnap); err != nil {
+		return err
+	}
+	if err := rn.raftStorage.ApplySnapshot(raftSnap); err != nil {
 		return err
 	}
 
 	rn.ReportSnapshot(rn.id, raft.SnapshotFinish)
 
-	fmt.Println("Restored Snapshot!")
 	return nil
 }
 
@@ -454,12 +542,16 @@ func (rn *Node) createSnapAndCompact() error {
 		return err
 	}
 
-	snap, err := rn.raftStorage.CreateSnapshot(index, rn.lastConfState, []byte(data))
+	raftSnap, err := rn.raftStorage.CreateSnapshot(index, rn.lastConfState, []byte(data))
 	if err != nil {
 		return err
 	}
 
-	if err = rn.raftStorage.Compact(snap.Metadata.Index - 1); err != nil {
+	if err = rn.raftStorage.Compact(raftSnap.Metadata.Index - 1); err != nil {
+		return err
+	}
+
+	if err = rn.persistSnapshot(raftSnap); err != nil {
 		return err
 	}
 
@@ -467,7 +559,7 @@ func (rn *Node) createSnapAndCompact() error {
 }
 
 func (rn *Node) commitsSinceLastSnap() uint64 {
-	snap, err := rn.raftStorage.Snapshot()
+	raftSnap, err := rn.raftStorage.Snapshot()
 	if err != nil {
 		// this should NEVER err
 		panic(err)
@@ -477,7 +569,7 @@ func (rn *Node) commitsSinceLastSnap() uint64 {
 		// this should NEVER err
 		panic(err)
 	}
-	return curIndex - snap.Metadata.Index
+	return curIndex - raftSnap.Metadata.Index
 }
 
 type confChangeNodeContext struct {
@@ -517,6 +609,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 					raftURL := fmt.Sprintf("http://%s:%d", ctxData.IP, ctxData.RaftPort)
 
 					rn.transport.AddPeer(types.ID(cc.NodeID), []string{raftURL})
+					fmt.Printf("Adding peer from conf change: %x\n", cc.NodeID)
 					rn.peerMap[cc.NodeID] = ctxData
 				}
 			case raftpb.ConfChangeRemoveNode:
@@ -530,9 +623,6 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 
 		}
 		rn.observe(entry)
-		// TODO: Add support for replay commits
-		// After replaying old commits/snapshots then mark
-		// this node operational
 	}
 	return true
 }
