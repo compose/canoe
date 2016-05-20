@@ -3,6 +3,7 @@ package raftwrapper
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft/raftpb"
@@ -229,7 +230,7 @@ func (rn *Node) requestRejoinCluster() error {
 		return fmt.Errorf("Error %d - %s", resp.StatusCode, respData.Message)
 	}
 	// TODO: Should return the general error from here
-	return nil
+	return errors.New("Couldn't connect to thingy")
 }
 
 func (rn *Node) requestSelfAddition() error {
@@ -303,7 +304,7 @@ func (rn *Node) requestSelfAddition() error {
 	if respData.Status == PeerServiceStatusError {
 		return fmt.Errorf("Error %d - %s", resp.StatusCode, respData.Message)
 	}
-	return nil
+	return errors.New("No available nodey thingy")
 }
 
 func (rn *Node) requestSelfDeletion() error {
