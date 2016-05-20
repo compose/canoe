@@ -2,7 +2,6 @@ package raftwrapper
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 
@@ -25,8 +24,6 @@ type walMetadata struct {
 // 4: Apply any Snapshot to raft storage
 // 5: Apply any hardstate to raft storage
 // 6: Apply and WAL Entries to raft storage
-// 7: If old wal then restart Node. Otherwise just start
-// TODO: Add old peers to Transport
 func (rn *Node) restoreRaft() error {
 	raftSnap, err := rn.initSnap()
 	if err != nil {
@@ -178,8 +175,8 @@ func (rn *Node) restoreFSMFromWAL(ents []raftpb.Entry) error {
 		return nil
 	}
 
-	if ok := rn.publishEntries(ents); !ok {
-		return errors.New("Could not restore entries from WAL")
+	if err := rn.publishEntries(ents); err != nil {
+		return err
 	}
 
 	return nil

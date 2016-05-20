@@ -211,14 +211,12 @@ func (rn *Node) Start() error {
 		if err := rn.selfRejoinCluster(); err != nil {
 			return err
 		}
-	} else {
+	} else if !rn.bootstrapNode {
 		if err := rn.addSelfToCluster(); err != nil {
 			return err
 		}
 	}
 	// final step to mark node as initialized
-	// TODO: Find a better place to mark initialized
-	rn.initialized = true
 	rn.running = true
 	return nil
 }
@@ -498,12 +496,12 @@ func (rn *Node) canAlterPeer() bool {
 	return rn.isHealthy() && rn.initialized
 }
 
-// TODO: Define healthy
+// TODO: Define healthy better
 func (rn *Node) isHealthy() bool {
 	return rn.running
 }
 
-func (rn *Node) scanReady() {
+func (rn *Node) scanReady() error {
 	defer rn.wal.Close()
 	defer func(rn *Node) {
 		rn.running = false
@@ -525,12 +523,12 @@ func (rn *Node) scanReady() {
 	for {
 		select {
 		case <-rn.stopc:
-			return
+			return nil
 		case <-ticker.C:
 			rn.node.Tick()
 		case <-snapTicker.C:
 			if err := rn.createSnapAndCompact(); err != nil {
-				return
+				return err
 			}
 		case rd := <-rn.node.Ready():
 			if rn.wal != nil {
@@ -541,18 +539,19 @@ func (rn *Node) scanReady() {
 
 			if !raft.IsEmptySnap(rd.Snapshot) {
 				if err := rn.processSnapshot(rd.Snapshot); err != nil {
-					return
+					return err
 				}
 			}
 
-			if ok := rn.publishEntries(rd.CommittedEntries); !ok {
-				return
+			if err := rn.publishEntries(rd.CommittedEntries); err != nil {
+				return err
 			}
 
 			rn.node.Advance()
 
 		}
 	}
+	return nil
 }
 
 func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
@@ -591,6 +590,8 @@ func (rn *Node) createSnapAndCompact() error {
 		return err
 	}
 
+	fmt.Printf("Last Index: %d, Current Index: %d\n", lastSnap.Metadata.Index, index)
+
 	if index <= lastSnap.Metadata.Index {
 		return nil
 	}
@@ -605,7 +606,7 @@ func (rn *Node) createSnapAndCompact() error {
 		return err
 	}
 
-	if err = rn.raftStorage.Compact(raftSnap.Metadata.Index - 1); err != nil {
+	if err = rn.raftStorage.Compact(raftSnap.Metadata.Index); err != nil {
 		return err
 	}
 
@@ -636,7 +637,9 @@ type confChangeNodeContext struct {
 	APIPort  int
 }
 
-func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
+var ErrorRemovedFromCluster = errors.New("I have been removed from cluster")
+
+func (rn *Node) publishEntries(ents []raftpb.Entry) error {
 	for _, entry := range ents {
 		switch entry.Type {
 		case raftpb.EntryNormal:
@@ -647,7 +650,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 			// An FSM should be responsible for being efficient
 			// for high-load situations
 			if err := rn.fsm.Apply(LogData(entry.Data)); err != nil {
-				return false
+				return err
 			}
 
 		case raftpb.EntryConfChange:
@@ -661,7 +664,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 				if len(cc.Context) > 0 {
 					var ctxData confChangeNodeContext
 					if err := json.Unmarshal(cc.Context, &ctxData); err != nil {
-						return false
+						return err
 					}
 
 					raftURL := fmt.Sprintf("http://%s:%d", ctxData.IP, ctxData.RaftPort)
@@ -673,8 +676,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 				}
 			case raftpb.ConfChangeRemoveNode:
 				if cc.NodeID == uint64(rn.id) {
-					fmt.Println("I have been removed!")
-					return false
+					return ErrorRemovedFromCluster
 				}
 				rn.transport.RemovePeer(types.ID(cc.NodeID))
 				delete(rn.peerMap, cc.NodeID)
@@ -683,7 +685,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) bool {
 		}
 		rn.observe(entry)
 	}
-	return true
+	return nil
 }
 
 func (rn *Node) Propose(data []byte) error {
