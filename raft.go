@@ -154,7 +154,6 @@ func (rn *Node) advanceTicksForElection() error {
 	return nil
 }
 
-// TODO: Don't panic on these. Return an err if they happen
 func (rn *Node) Start() error {
 	walEnabled := rn.walDir() != ""
 	rejoinCluster := rn.shouldRejoinCluster()
@@ -189,8 +188,13 @@ func (rn *Node) Start() error {
 	if err := rn.transport.Start(); err != nil {
 		return err
 	}
+	rn.initialized = true
 
-	go rn.scanReady()
+	go func(rn *Node) {
+		if err := rn.scanReady(); err != nil {
+			panic(err)
+		}
+	}(rn)
 
 	// Start config http service
 	go func(rn *Node) {
