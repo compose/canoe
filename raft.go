@@ -162,6 +162,14 @@ func (rn *Node) Start() error {
 	}
 	rn.stopc = make(chan struct{})
 
+	if err := rn.attachTransport(); err != nil {
+		return err
+	}
+
+	if err := rn.transport.Start(); err != nil {
+		return err
+	}
+
 	if walEnabled {
 		if err := rn.restoreRaft(); err != nil {
 			return err
@@ -181,13 +189,6 @@ func (rn *Node) Start() error {
 		return err
 	}
 
-	if err := rn.attachTransport(); err != nil {
-		return err
-	}
-
-	if err := rn.transport.Start(); err != nil {
-		return err
-	}
 	rn.initialized = true
 
 	go func(rn *Node) {
@@ -563,7 +564,17 @@ func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
 		return nil
 	}
 
-	if err := rn.fsm.Restore(SnapshotData(raftSnap.Data)); err != nil {
+	var snapStruct snapshot
+	if err := json.Unmarshal(raftSnap.Data, &snapStruct); err != nil {
+		return err
+	}
+
+	for id, info := range snapStruct.Metadata.Peers {
+		raftURL := fmt.Sprintf("http://%s:%d", info.IP, info.RaftPort)
+		rn.transport.AddPeer(types.ID(id), []string{raftURL})
+	}
+
+	if err := rn.fsm.Restore(SnapshotData(snapStruct.Data)); err != nil {
 		return err
 	}
 
@@ -587,6 +598,52 @@ func (rn *Node) processSnapshot(raftSnap raftpb.Snapshot) error {
 	return nil
 }
 
+type snapshot struct {
+	Metadata *snapshotMetadata `json:"metadata"`
+	Data     []byte            `json:"data"`
+}
+
+type snapshotMetadata struct {
+	Peers map[uint64]confChangeNodeContext `json:"peers"`
+}
+
+func (p *snapshotMetadata) MarshalJSON() ([]byte, error) {
+	tmpStruct := &struct {
+		Peers map[string]confChangeNodeContext `json:"peers"`
+	}{
+		Peers: make(map[string]confChangeNodeContext),
+	}
+
+	for key, val := range p.Peers {
+		tmpStruct.Peers[strconv.FormatUint(key, 10)] = val
+	}
+
+	return json.Marshal(tmpStruct)
+}
+
+func (p *snapshotMetadata) UnmarshalJSON(data []byte) error {
+	tmpStruct := &struct {
+		Peers map[string]confChangeNodeContext `json:"peers"`
+	}{}
+
+	if err := json.Unmarshal(data, tmpStruct); err != nil {
+		return err
+	}
+
+	p.Peers = make(map[uint64]confChangeNodeContext)
+
+	for key, val := range tmpStruct.Peers {
+		convKey, err := strconv.ParseUint(key, 10, 64)
+		if err != nil {
+			return err
+		}
+		p.Peers[convKey] = val
+	}
+
+	return nil
+}
+
+// TODO: Limit to only snapping after min committed
 func (rn *Node) createSnapAndCompact() error {
 	index := rn.node.Status().Applied
 	lastSnap, err := rn.raftStorage.Snapshot()
@@ -600,7 +657,19 @@ func (rn *Node) createSnapAndCompact() error {
 		return nil
 	}
 
-	data, err := rn.fsm.Snapshot()
+	fsmData, err := rn.fsm.Snapshot()
+	if err != nil {
+		return err
+	}
+
+	finalSnap := &snapshot{
+		Metadata: &snapshotMetadata{
+			Peers: rn.peerMap,
+		},
+		Data: []byte(fsmData),
+	}
+
+	data, err := json.Marshal(finalSnap)
 	if err != nil {
 		return err
 	}
@@ -636,9 +705,9 @@ func (rn *Node) commitsSinceLastSnap() uint64 {
 }
 
 type confChangeNodeContext struct {
-	IP       string
-	RaftPort int
-	APIPort  int
+	IP       string `json:"ip"`
+	RaftPort int    `json:"raft_port"`
+	APIPort  int    `json:"api_port"`
 }
 
 var ErrorRemovedFromCluster = errors.New("I have been removed from cluster")

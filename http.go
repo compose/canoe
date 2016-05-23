@@ -72,7 +72,7 @@ func (rn *Node) handlePeerMembersRequest(w http.ResponseWriter, req *http.Reques
 		writeNodeNotReady(w)
 	} else {
 		membersResp := &PeerMembershipResponseData{
-			PeerData{
+			HTTPPeerData{
 				RaftPort:    rn.raftPort,
 				APIPort:     rn.apiPort,
 				ID:          rn.id,
@@ -153,7 +153,7 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 		}
 
 		addResp := &PeerAdditionResponseData{
-			PeerData{
+			HTTPPeerData{
 				RaftPort:    rn.raftPort,
 				APIPort:     rn.apiPort,
 				ID:          rn.id,
@@ -175,6 +175,10 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 func (rn *Node) requestRejoinCluster() error {
 	var resp *http.Response
 	var respData PeerServiceResponse
+
+	if len(rn.bootstrapPeers) == 0 {
+		return nil
+	}
 
 	for _, peer := range rn.bootstrapPeers {
 		peerAPIURL := fmt.Sprintf("%s%s", peer, peerEndpoint)
@@ -201,29 +205,7 @@ func (rn *Node) requestRejoinCluster() error {
 				return err
 			}
 
-			peerURL, err := url.Parse(peer)
-			if err != nil {
-				continue
-				return err
-			}
-
-			addURL := fmt.Sprintf("http://%s:%s", strings.Split(peerURL.Host, ":")[0], strconv.Itoa(peerData.RaftPort))
-
-			rn.transport.AddPeer(types.ID(peerData.ID), []string{addURL})
-			rn.peerMap[peerData.ID] = confChangeNodeContext{
-				IP:       strings.Split(peerURL.Host, ":")[0],
-				RaftPort: peerData.RaftPort,
-				APIPort:  peerData.APIPort,
-			}
-
-			for id, context := range peerData.RemotePeers {
-				if id != rn.id {
-					addURL := fmt.Sprintf("http://%s:%s", context.IP, strconv.Itoa(context.RaftPort))
-					rn.transport.AddPeer(types.ID(id), []string{addURL})
-				}
-				rn.peerMap[id] = context
-			}
-			return nil
+			return rn.addPeersFromRemote(peer, &peerData.HTTPPeerData)
 		}
 	}
 	if respData.Status == PeerServiceStatusError {
@@ -231,6 +213,34 @@ func (rn *Node) requestRejoinCluster() error {
 	}
 	// TODO: Should return the general error from here
 	return errors.New("Couldn't connect to thingy")
+}
+
+func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *HTTPPeerData) error {
+	peerURL, err := url.Parse(remotePeer)
+	if err != nil {
+		return err
+	}
+	addURL := fmt.Sprintf("http://%s:%s",
+		strings.Split(peerURL.Host, ":")[0],
+		strconv.Itoa(remoteMemberResponse.RaftPort))
+
+	rn.transport.AddPeer(types.ID(remoteMemberResponse.ID), []string{addURL})
+	fmt.Printf("Adding peer to transport: %d - %s", remoteMemberResponse.ID, addURL)
+	rn.peerMap[remoteMemberResponse.ID] = confChangeNodeContext{
+		IP:       strings.Split(peerURL.Host, ":")[0],
+		RaftPort: remoteMemberResponse.RaftPort,
+		APIPort:  remoteMemberResponse.APIPort,
+	}
+
+	for id, context := range remoteMemberResponse.RemotePeers {
+		if id != rn.id {
+			addURL := fmt.Sprintf("http://%s:%s", context.IP, strconv.Itoa(context.RaftPort))
+			rn.transport.AddPeer(types.ID(id), []string{addURL})
+			fmt.Printf("Adding peer to transport: %d - %s", id, addURL)
+		}
+		rn.peerMap[id] = context
+	}
+	return nil
 }
 
 func (rn *Node) requestSelfAddition() error {
@@ -276,29 +286,7 @@ func (rn *Node) requestSelfAddition() error {
 				return err
 			}
 
-			peerURL, err := url.Parse(peer)
-			if err != nil {
-				continue
-				return err
-			}
-
-			addURL := fmt.Sprintf("http://%s:%s", strings.Split(peerURL.Host, ":")[0], strconv.Itoa(peerData.RaftPort))
-
-			rn.transport.AddPeer(types.ID(peerData.ID), []string{addURL})
-			rn.peerMap[peerData.ID] = confChangeNodeContext{
-				IP:       strings.Split(peerURL.Host, ":")[0],
-				RaftPort: peerData.RaftPort,
-				APIPort:  peerData.APIPort,
-			}
-
-			for id, context := range peerData.RemotePeers {
-				if id != rn.id {
-					addURL := fmt.Sprintf("http://%s:%s", context.IP, strconv.Itoa(context.RaftPort))
-					rn.transport.AddPeer(types.ID(id), []string{addURL})
-				}
-				rn.peerMap[id] = context
-			}
-			return nil
+			return rn.addPeersFromRemote(peer, &peerData.HTTPPeerData)
 		}
 	}
 	if respData.Status == PeerServiceStatusError {
@@ -359,21 +347,23 @@ var PeerServiceStatusError = "error"
 // PeerAdditionAddMe has self-identifying port and id
 // With a list of all Peers in the cluster currently
 type PeerAdditionResponseData struct {
-	PeerData
+	HTTPPeerData
 }
 
 type PeerMembershipResponseData struct {
-	PeerData
+	HTTPPeerData
 }
 
-type PeerData struct {
+// This needs to be a different struct because it is important to seperate
+// The API/Raft/ID of the node we're pinging from other remote nodes
+type HTTPPeerData struct {
 	RaftPort    int                              `json:"raft_port"`
 	APIPort     int                              `json:"api_port"`
 	ID          uint64                           `json:"id"`
 	RemotePeers map[uint64]confChangeNodeContext `json:"peers"`
 }
 
-func (p *PeerData) MarshalJSON() ([]byte, error) {
+func (p *HTTPPeerData) MarshalJSON() ([]byte, error) {
 	tmpStruct := &struct {
 		RaftPort    int                              `json:"raft_port"`
 		APIPort     int                              `json:"api_port"`
@@ -393,7 +383,7 @@ func (p *PeerData) MarshalJSON() ([]byte, error) {
 	return json.Marshal(tmpStruct)
 }
 
-func (p *PeerData) UnmarshalJSON(data []byte) error {
+func (p *HTTPPeerData) UnmarshalJSON(data []byte) error {
 	tmpStruct := &struct {
 		RaftPort    int                              `json:"raft_port"`
 		APIPort     int                              `json:"api_port"`

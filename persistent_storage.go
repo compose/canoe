@@ -30,6 +30,8 @@ func (rn *Node) restoreRaft() error {
 		return err
 	}
 
+	fmt.Println(raftSnap)
+
 	// NOTE: Step 1
 	if err := rn.restoreFSMFromSnapshot(raftSnap); err != nil {
 		return err
