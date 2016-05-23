@@ -83,7 +83,6 @@ func (rn *Node) restoreRaft() error {
 	if err := rn.transport.Start(); err != nil {
 		return err
 	}
-	fmt.Printf("Transport ID RESTORE: %v\n", rn.transport.ID)
 
 	// NOTE: Step 2, 3, 4
 	if err := rn.restoreMemoryStorage(*raftSnap, hState, ents); err != nil {

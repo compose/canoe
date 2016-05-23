@@ -104,8 +104,9 @@ type SnapshotConfig struct {
 	MaxCommittedLogs uint64
 }
 
+// Change this. We NEED to have snapshotting for some features unfortunately
 var DefaultSnapshotConfig = &SnapshotConfig{
-	Interval:         -1 * time.Second,
+	Interval:         -1 * time.Minute,
 	MinCommittedLogs: 0,
 	MaxCommittedLogs: 0,
 }
@@ -154,6 +155,7 @@ func (rn *Node) advanceTicksForElection() error {
 	return nil
 }
 
+// TODO: When datadir. Then create initial snap post initialization with peers
 func (rn *Node) Start() error {
 	walEnabled := rn.walDir() != ""
 	rejoinCluster := rn.shouldRejoinCluster()
@@ -175,7 +177,6 @@ func (rn *Node) Start() error {
 		rn.node = raft.RestartNode(rn.raftConfig)
 	} else {
 		// TODO: Fix the mess that is transport initialization
-		fmt.Printf("rn id: %x\n", rn.id)
 		if err := rn.attachTransport(); err != nil {
 			return err
 		}
@@ -183,7 +184,6 @@ func (rn *Node) Start() error {
 		if err := rn.transport.Start(); err != nil {
 			return err
 		}
-		fmt.Printf("Transport ID: %v\n", rn.transport.ID)
 		if rn.bootstrapNode {
 			rn.node = raft.StartNode(rn.raftConfig, []raft.Peer{raft.Peer{ID: rn.id}})
 		} else {
@@ -227,6 +227,7 @@ func (rn *Node) Start() error {
 			return err
 		}
 	}
+
 	// final step to mark node as initialized
 	rn.running = true
 	return nil
@@ -523,9 +524,11 @@ func (rn *Node) scanReady() error {
 	var snapTicker *time.Ticker
 
 	// if non-interval based then create a ticker which will never post to a chan
-	if rn.snapshotConfig.Interval <= 0 {
+	if rn.snapshotConfig.Interval <= 0 && rn.walDir() == "" {
 		snapTicker = time.NewTicker(1 * time.Second)
 		snapTicker.Stop()
+	} else if rn.snapshotConfig.Interval <= 0 {
+		errors.New("Must not disable snapshotting when datadir unspecified")
 	} else {
 		snapTicker = time.NewTicker(rn.snapshotConfig.Interval)
 	}
@@ -533,6 +536,8 @@ func (rn *Node) scanReady() error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+	// create initial snapshot
+	rn.createSnapAndCompact(true)
 	for {
 		select {
 		case <-rn.stopc:
@@ -540,7 +545,7 @@ func (rn *Node) scanReady() error {
 		case <-ticker.C:
 			rn.node.Tick()
 		case <-snapTicker.C:
-			if err := rn.createSnapAndCompact(); err != nil {
+			if err := rn.createSnapAndCompact(false); err != nil {
 				return err
 			}
 		case rd := <-rn.node.Ready():
@@ -652,14 +657,14 @@ func (p *snapshotMetadata) UnmarshalJSON(data []byte) error {
 }
 
 // TODO: Limit to only snapping after min committed
-func (rn *Node) createSnapAndCompact() error {
+func (rn *Node) createSnapAndCompact(force bool) error {
 	index := rn.node.Status().Applied
 	lastSnap, err := rn.raftStorage.Snapshot()
 	if err != nil {
 		return err
 	}
 
-	if index <= lastSnap.Metadata.Index {
+	if index <= lastSnap.Metadata.Index && !force {
 		return nil
 	}
 
