@@ -225,20 +225,22 @@ func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *HTTP
 		strconv.Itoa(remoteMemberResponse.RaftPort))
 
 	rn.transport.AddPeer(types.ID(remoteMemberResponse.ID), []string{addURL})
-	fmt.Printf("Adding peer to transport: %d - %s", remoteMemberResponse.ID, addURL)
+	fmt.Printf("Peers add http: %x\n", remoteMemberResponse.ID)
 	rn.peerMap[remoteMemberResponse.ID] = confChangeNodeContext{
 		IP:       strings.Split(peerURL.Host, ":")[0],
 		RaftPort: remoteMemberResponse.RaftPort,
 		APIPort:  remoteMemberResponse.APIPort,
 	}
+	fmt.Printf("Cur Peer Map: %v", rn.peerMap)
 
 	for id, context := range remoteMemberResponse.RemotePeers {
 		if id != rn.id {
 			addURL := fmt.Sprintf("http://%s:%s", context.IP, strconv.Itoa(context.RaftPort))
 			rn.transport.AddPeer(types.ID(id), []string{addURL})
-			fmt.Printf("Adding peer to transport: %d - %s", id, addURL)
+			fmt.Printf("Peers add http: %x\n", id)
 		}
 		rn.peerMap[id] = context
+		fmt.Printf("Cur Peer Map: %v", rn.peerMap)
 	}
 	return nil
 }

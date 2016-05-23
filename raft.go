@@ -162,29 +162,35 @@ func (rn *Node) Start() error {
 	}
 	rn.stopc = make(chan struct{})
 
-	if err := rn.attachTransport(); err != nil {
-		return err
-	}
-
-	if err := rn.transport.Start(); err != nil {
-		return err
-	}
-
 	if walEnabled {
-		if err := rn.restoreRaft(); err != nil {
+		if err := rn.initPersistentStorage(); err != nil {
 			return err
 		}
 	}
 
 	if rejoinCluster {
+		if err := rn.restoreRaft(); err != nil {
+			return err
+		}
 		rn.node = raft.RestartNode(rn.raftConfig)
 	} else {
+		// TODO: Fix the mess that is transport initialization
+		fmt.Printf("rn id: %x\n", rn.id)
+		if err := rn.attachTransport(); err != nil {
+			return err
+		}
+
+		if err := rn.transport.Start(); err != nil {
+			return err
+		}
+		fmt.Printf("Transport ID: %v\n", rn.transport.ID)
 		if rn.bootstrapNode {
 			rn.node = raft.StartNode(rn.raftConfig, []raft.Peer{raft.Peer{ID: rn.id}})
 		} else {
 			rn.node = raft.StartNode(rn.raftConfig, nil)
 		}
 	}
+
 	if err := rn.advanceTicksForElection(); err != nil {
 		return err
 	}
@@ -378,6 +384,8 @@ func (rn *Node) attachTransport() error {
 	ss := &stats.ServerStats{}
 	ss.Initialize()
 
+	//ID TBA on raft restoration creation
+	// due to unfortunate dependency on the restore process needing
 	rn.transport = &rafthttp.Transport{
 		ID:          types.ID(rn.id),
 		ClusterID:   types.ID(rn.cid),
@@ -650,8 +658,6 @@ func (rn *Node) createSnapAndCompact() error {
 	if err != nil {
 		return err
 	}
-
-	fmt.Printf("Last Index: %d, Current Index: %d\n", lastSnap.Metadata.Index, index)
 
 	if index <= lastSnap.Metadata.Index {
 		return nil
