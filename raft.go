@@ -127,6 +127,10 @@ var DefaultInitializationBackoffArgs = &InitializationBackoffArgs{
 	MaxElapsedTime:      2 * time.Minute,
 }
 
+func (rn *Node) UniqueID() uint64 {
+	return rn.id
+}
+
 // note: peers is only for asking to join the cluster.
 // It will not be able to connect if the peers don't respond to cluster node add request
 // This is because each node defines it's own uuid at startup. We must be told this UUID
@@ -155,7 +159,7 @@ func (rn *Node) advanceTicksForElection() error {
 	return nil
 }
 
-// TODO: When datadir. Then create initial snap post initialization with peers
+// TODO: Intermittent issues with restoring disconnected member from snapshot
 func (rn *Node) Start() error {
 	walEnabled := rn.walDir() != ""
 	rejoinCluster := rn.shouldRejoinCluster()
