@@ -1,4 +1,4 @@
-package raftwrapper
+package canoe
 
 import (
 	"github.com/gorilla/mux"
