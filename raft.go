@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"golang.org/x/net/context"
 	"log"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -64,6 +65,8 @@ type Node struct {
 	lastConfState *raftpb.ConfState
 
 	stopc chan struct{}
+
+	logger CanoeLogger
 }
 
 type NodeConfig struct {
@@ -87,6 +90,28 @@ type NodeConfig struct {
 	InitBackoff *InitializationBackoffArgs
 	// if nil, then default to no snapshotting
 	SnapshotConfig *SnapshotConfig
+
+	Logger CanoeLogger
+}
+
+type CanoeLogger interface {
+	Debug(v ...interface{})
+	Debugf(format string, v ...interface{})
+
+	Error(v ...interface{})
+	Errorf(format string, v ...interface{})
+
+	Info(v ...interface{})
+	Infof(format string, v ...interface{})
+
+	Warning(v ...interface{})
+	Warningf(format string, v ...interface{})
+
+	Fatal(v ...interface{})
+	Fatalf(format string, v ...interface{})
+
+	Panic(v ...interface{})
+	Panicf(format string, v ...interface{})
 }
 
 type SnapshotConfig struct {
@@ -277,7 +302,7 @@ func (rn *Node) Destroy() error {
 
 func (rn *Node) removeSelfFromCluster() error {
 	notify := func(err error, t time.Duration) {
-		log.Printf("Couldn't remove self from cluster: %s Trying again in %v", err.Error(), t)
+		rn.logger.Warningf("Couldn't remove self from cluster: %s Trying again in %v", err.Error(), t)
 	}
 
 	expBackoff := backoff.NewExponentialBackOff()
@@ -297,7 +322,7 @@ func (rn *Node) removeSelfFromCluster() error {
 
 func (rn *Node) addSelfToCluster() error {
 	notify := func(err error, t time.Duration) {
-		log.Printf("Couldn't add self to cluster: %s Trying again in %v", err.Error(), t)
+		rn.logger.Warningf("Couldn't add self to cluster: %s Trying again in %v", err.Error(), t)
 	}
 
 	expBackoff := backoff.NewExponentialBackOff()
@@ -316,7 +341,7 @@ func (rn *Node) addSelfToCluster() error {
 
 func (rn *Node) selfRejoinCluster() error {
 	notify := func(err error, t time.Duration) {
-		log.Printf("Couldn't join cluster: %s Trying again in %v", err.Error(), t)
+		rn.logger.Warningf("Couldn't join cluster: %s Trying again in %v", err.Error(), t)
 	}
 
 	expBackoff := backoff.NewExponentialBackOff()
@@ -362,6 +387,7 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 		initBackoffArgs: args.InitBackoff,
 		snapshotConfig:  args.SnapshotConfig,
 		dataDir:         args.DataDir,
+		logger:          args.Logger,
 	}
 
 	if rn.id == 0 {
@@ -380,6 +406,13 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 		MaxSizePerMsg:   1024 * 1024,
 		MaxInflightMsgs: 256,
 		CheckQuorum:     true,
+	}
+
+	if rn.logger != nil {
+		rn.raftConfig.Logger = raft.Logger(rn.logger)
+	} else {
+		rn.logger = CanoeLogger(&raft.DefaultLogger{Logger: log.New(os.Stderr, "canoe", log.LstdFlags)})
+		rn.raftConfig.Logger = raft.Logger(rn.logger)
 	}
 
 	return rn, nil

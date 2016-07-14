@@ -69,7 +69,7 @@ func (rn *Node) peerMembersHandlerFunc() func(http.ResponseWriter, *http.Request
 
 func (rn *Node) handlePeerMembersRequest(w http.ResponseWriter, req *http.Request) {
 	if !rn.initialized {
-		writeNodeNotReady(w)
+		rn.writeNodeNotReady(w)
 	} else {
 		membersResp := &PeerMembershipResponseData{
 			HTTPPeerData{
@@ -80,7 +80,7 @@ func (rn *Node) handlePeerMembersRequest(w http.ResponseWriter, req *http.Reques
 			},
 		}
 
-		writeSuccess(w, membersResp)
+		rn.writeSuccess(w, membersResp)
 	}
 }
 
@@ -95,7 +95,7 @@ func (rn *Node) handlePeerDeleteRequest(w http.ResponseWriter, req *http.Request
 		var delReq peerDeletionRequest
 
 		if err := json.NewDecoder(req.Body).Decode(&delReq); err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			rn.writeError(w, http.StatusBadRequest, err)
 		}
 
 		confChange := &raftpb.ConfChange{
@@ -103,12 +103,12 @@ func (rn *Node) handlePeerDeleteRequest(w http.ResponseWriter, req *http.Request
 		}
 
 		if err := rn.proposePeerDeletion(confChange, false); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			rn.writeError(w, http.StatusInternalServerError, err)
 		}
 
-		writeSuccess(w, nil)
+		rn.writeSuccess(w, nil)
 	} else {
-		writeNodeNotReady(w)
+		rn.writeNodeNotReady(w)
 	}
 }
 
@@ -129,7 +129,7 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 		var addReq peerAdditionRequest
 
 		if err := json.NewDecoder(req.Body).Decode(&addReq); err != nil {
-			writeError(w, http.StatusBadRequest, err)
+			rn.writeError(w, http.StatusBadRequest, err)
 		}
 
 		confContext := confChangeNodeContext{
@@ -140,7 +140,7 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 
 		confContextData, err := json.Marshal(confContext)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			rn.writeError(w, http.StatusInternalServerError, err)
 		}
 
 		confChange := &raftpb.ConfChange{
@@ -149,7 +149,7 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if err := rn.proposePeerAddition(confChange, false); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
+			rn.writeError(w, http.StatusInternalServerError, err)
 		}
 
 		addResp := &PeerAdditionResponseData{
@@ -161,9 +161,9 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 			},
 		}
 
-		writeSuccess(w, addResp)
+		rn.writeSuccess(w, addResp)
 	} else {
-		writeNodeNotReady(w)
+		rn.writeNodeNotReady(w)
 	}
 }
 
@@ -225,22 +225,22 @@ func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *HTTP
 		strconv.Itoa(remoteMemberResponse.RaftPort))
 
 	rn.transport.AddPeer(types.ID(remoteMemberResponse.ID), []string{addURL})
-	fmt.Printf("Peers add http: %x\n", remoteMemberResponse.ID)
+	rn.logger.Infof("Adding peer from HTTP request: %x\n", remoteMemberResponse.ID)
 	rn.peerMap[remoteMemberResponse.ID] = confChangeNodeContext{
 		IP:       strings.Split(peerURL.Host, ":")[0],
 		RaftPort: remoteMemberResponse.RaftPort,
 		APIPort:  remoteMemberResponse.APIPort,
 	}
-	fmt.Printf("Cur Peer Map: %v", rn.peerMap)
+	rn.logger.Debugf("Current Peer Map: %v", rn.peerMap)
 
 	for id, context := range remoteMemberResponse.RemotePeers {
 		if id != rn.id {
 			addURL := fmt.Sprintf("http://%s:%s", context.IP, strconv.Itoa(context.RaftPort))
 			rn.transport.AddPeer(types.ID(id), []string{addURL})
-			fmt.Printf("Peers add http: %x\n", id)
+			rn.logger.Infof("Adding peer from HTTP request: %x\n", id)
 		}
 		rn.peerMap[id] = context
-		fmt.Printf("Cur Peer Map: %v", rn.peerMap)
+		rn.logger.Debugf("Current Peer Map: %v", rn.peerMap)
 	}
 	return nil
 }
@@ -432,7 +432,7 @@ type peerDeletionRequest struct {
 	ID uint64 `json:"id"`
 }
 
-func writeSuccess(w http.ResponseWriter, body interface{}) {
+func (rn *Node) writeSuccess(w http.ResponseWriter, body interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
@@ -441,22 +441,26 @@ func writeSuccess(w http.ResponseWriter, body interface{}) {
 	if body != nil {
 		respData, err = json.Marshal(body)
 		if err != nil {
-			fmt.Println(err.Error())
+			rn.logger.Errorf(err.Error())
 		}
 	}
 
 	if err = json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusSuccess, Data: respData}); err != nil {
-		fmt.Println(err.Error())
+		rn.logger.Errorf(err.Error())
 	}
 }
-func writeError(w http.ResponseWriter, code int, err error) {
+func (rn *Node) writeError(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusError, Message: err.Error()})
+	if err := json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusError, Message: err.Error()}); err != nil {
+		rn.logger.Errorf(err.Error())
+	}
 }
 
-func writeNodeNotReady(w http.ResponseWriter) {
+func (rn *Node) writeNodeNotReady(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
-	json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusError, Message: PeerServiceNodeNotReady})
+	if err := json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusError, Message: PeerServiceNodeNotReady}); err != nil {
+		rn.logger.Errorf(err.Error())
+	}
 }
