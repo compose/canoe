@@ -126,14 +126,12 @@ type SnapshotConfig struct {
 	// If the interval hasn't ticked but we've gone over a commited log threshold then snapshot
 	// Note: Use this with care. Snapshotting is a fairly expenseive process.
 	// Interval is suggested best method for triggering snapshots
-	MaxCommittedLogs uint64
 }
 
 // Change this. We NEED to have snapshotting for some features unfortunately
 var DefaultSnapshotConfig = &SnapshotConfig{
 	Interval:         -1 * time.Minute,
 	MinCommittedLogs: 0,
-	MaxCommittedLogs: 0,
 }
 
 type InitializationBackoffArgs struct {
