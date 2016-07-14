@@ -817,6 +817,7 @@ func (rn *Node) Process(ctx context.Context, m raftpb.Message) error {
 	return rn.node.Step(ctx, m)
 }
 
+// TODO: Get these defined
 func (rn *Node) IsIDRemoved(id uint64) bool {
 	return false
 }

@@ -171,7 +171,6 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 // thought of having a slice of accumulated errors?
 // Or log.Warn on all failed attempts and if unsuccessful return a general failure
 // error
-// TODO: Pull out the node addition logic so we aren't repeating with add self
 func (rn *Node) requestRejoinCluster() error {
 	var resp *http.Response
 	var respData PeerServiceResponse
