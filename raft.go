@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"golang.org/x/net/context"
-	"log"
-	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -430,8 +428,8 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 	if rn.logger != nil {
 		rn.raftConfig.Logger = raft.Logger(rn.logger)
 	} else {
-		rn.logger = Logger(&raft.DefaultLogger{Logger: log.New(os.Stderr, "canoe", log.LstdFlags)})
-		rn.raftConfig.Logger = raft.Logger(rn.logger)
+		rn.logger = DefaultLogger
+		rn.raftConfig.Logger = rn.logger
 	}
 
 	return rn, nil
