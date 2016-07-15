@@ -15,6 +15,8 @@ import (
 )
 
 var peerEndpoint = "/peers"
+
+// FSMAPIEndpoint defines where the endpoint for the FSM handler will be
 var FSMAPIEndpoint = "/api"
 
 func (rn *Node) peerAPI() *mux.Router {
@@ -71,8 +73,8 @@ func (rn *Node) handlePeerMembersRequest(w http.ResponseWriter, req *http.Reques
 	if !rn.initialized {
 		rn.writeNodeNotReady(w)
 	} else {
-		membersResp := &PeerMembershipResponseData{
-			HTTPPeerData{
+		membersResp := &peerMembershipResponseData{
+			httpPeerData{
 				RaftPort:    rn.raftPort,
 				APIPort:     rn.apiPort,
 				ID:          rn.id,
@@ -152,8 +154,8 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 			rn.writeError(w, http.StatusInternalServerError, err)
 		}
 
-		addResp := &PeerAdditionResponseData{
-			HTTPPeerData{
+		addResp := &peerAdditionResponseData{
+			httpPeerData{
 				RaftPort:    rn.raftPort,
 				APIPort:     rn.apiPort,
 				ID:          rn.id,
@@ -169,11 +171,11 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 
 // TODO: Figure out how to handle these errs rather than just continue...
 // thought of having a slice of accumulated errors?
-// Or log.Warn on all failed attempts and if unsuccessful return a general failure
+// Or log.Warning on all failed attempts and if unsuccessful return a general failure
 // error
 func (rn *Node) requestRejoinCluster() error {
 	var resp *http.Response
-	var respData PeerServiceResponse
+	var respData peerServiceResponse
 
 	if len(rn.bootstrapPeers) == 0 {
 		return nil
@@ -184,37 +186,37 @@ func (rn *Node) requestRejoinCluster() error {
 
 		resp, err := http.Get(peerAPIURL)
 		if err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		defer resp.Body.Close()
 
 		if err = json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
-		if respData.Status == PeerServiceStatusError {
+		if respData.Status == peerServiceStatusError {
 			continue
-		} else if respData.Status == PeerServiceStatusSuccess {
+		} else if respData.Status == peerServiceStatusSuccess {
 
-			var peerData PeerMembershipResponseData
+			var peerData peerMembershipResponseData
 			if err := json.Unmarshal(respData.Data, &peerData); err != nil {
 				return err
 			}
 
-			return rn.addPeersFromRemote(peer, &peerData.HTTPPeerData)
+			return rn.addPeersFromRemote(peer, &peerData.httpPeerData)
 		}
 	}
-	if respData.Status == PeerServiceStatusError {
+	if respData.Status == peerServiceStatusError {
 		return fmt.Errorf("Error %d - %s", resp.StatusCode, respData.Message)
 	}
 	// TODO: Should return the general error from here
 	return errors.New("Couldn't connect to thingy")
 }
 
-func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *HTTPPeerData) error {
+func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *httpPeerData) error {
 	peerURL, err := url.Parse(remotePeer)
 	if err != nil {
 		return err
@@ -246,7 +248,7 @@ func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *HTTP
 
 func (rn *Node) requestSelfAddition() error {
 	var resp *http.Response
-	var respData PeerServiceResponse
+	var respData peerServiceResponse
 
 	reqData := peerAdditionRequest{
 		ID:       rn.id,
@@ -257,8 +259,8 @@ func (rn *Node) requestSelfAddition() error {
 	for _, peer := range rn.bootstrapPeers {
 		mar, err := json.Marshal(reqData)
 		if err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		reader := bytes.NewReader(mar)
@@ -266,31 +268,31 @@ func (rn *Node) requestSelfAddition() error {
 
 		resp, err = http.Post(peerAPIURL, "application/json", reader)
 		if err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		defer resp.Body.Close()
 
 		if err = json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			// return err
 		}
 
-		if respData.Status == PeerServiceStatusError {
+		if respData.Status == peerServiceStatusError {
 			continue
-		} else if respData.Status == PeerServiceStatusSuccess {
+		} else if respData.Status == peerServiceStatusSuccess {
 
 			// this ought to work since it should be added to cluster now
-			var peerData PeerAdditionResponseData
+			var peerData peerAdditionResponseData
 			if err := json.Unmarshal(respData.Data, &peerData); err != nil {
 				return err
 			}
 
-			return rn.addPeersFromRemote(peer, &peerData.HTTPPeerData)
+			return rn.addPeersFromRemote(peer, &peerData.httpPeerData)
 		}
 	}
-	if respData.Status == PeerServiceStatusError {
+	if respData.Status == peerServiceStatusError {
 		return fmt.Errorf("Error %d - %s", resp.StatusCode, respData.Message)
 	}
 	return errors.New("No available nodey thingy")
@@ -298,7 +300,7 @@ func (rn *Node) requestSelfAddition() error {
 
 func (rn *Node) requestSelfDeletion() error {
 	var resp *http.Response
-	var respData PeerServiceResponse
+	var respData peerServiceResponse
 	reqData := peerDeletionRequest{
 		ID: rn.id,
 	}
@@ -331,40 +333,40 @@ func (rn *Node) requestSelfDeletion() error {
 			return err
 		}
 
-		if respData.Status == PeerServiceStatusSuccess {
+		if respData.Status == peerServiceStatusSuccess {
 			return nil
 		}
 
 	}
-	if respData.Status == PeerServiceStatusError {
+	if respData.Status == peerServiceStatusError {
 		return fmt.Errorf("Error %d - %s", resp.StatusCode, respData.Message)
 	}
 	return nil
 }
 
-var PeerServiceStatusSuccess = "success"
-var PeerServiceStatusError = "error"
+var peerServiceStatusSuccess = "success"
+var peerServiceStatusError = "error"
 
 // PeerAdditionAddMe has self-identifying port and id
 // With a list of all Peers in the cluster currently
-type PeerAdditionResponseData struct {
-	HTTPPeerData
+type peerAdditionResponseData struct {
+	httpPeerData
 }
 
-type PeerMembershipResponseData struct {
-	HTTPPeerData
+type peerMembershipResponseData struct {
+	httpPeerData
 }
 
 // This needs to be a different struct because it is important to seperate
 // The API/Raft/ID of the node we're pinging from other remote nodes
-type HTTPPeerData struct {
+type httpPeerData struct {
 	RaftPort    int                              `json:"raft_port"`
 	APIPort     int                              `json:"api_port"`
 	ID          uint64                           `json:"id"`
 	RemotePeers map[uint64]confChangeNodeContext `json:"peers"`
 }
 
-func (p *HTTPPeerData) MarshalJSON() ([]byte, error) {
+func (p *httpPeerData) MarshalJSON() ([]byte, error) {
 	tmpStruct := &struct {
 		RaftPort    int                              `json:"raft_port"`
 		APIPort     int                              `json:"api_port"`
@@ -384,7 +386,7 @@ func (p *HTTPPeerData) MarshalJSON() ([]byte, error) {
 	return json.Marshal(tmpStruct)
 }
 
-func (p *HTTPPeerData) UnmarshalJSON(data []byte) error {
+func (p *httpPeerData) UnmarshalJSON(data []byte) error {
 	tmpStruct := &struct {
 		RaftPort    int                              `json:"raft_port"`
 		APIPort     int                              `json:"api_port"`
@@ -412,13 +414,13 @@ func (p *HTTPPeerData) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type PeerServiceResponse struct {
+type peerServiceResponse struct {
 	Status  string `json:"status"`
 	Message string `json:"message,omitempty"`
 	Data    []byte `json:"data,omitempty"`
 }
 
-var PeerServiceNodeNotReady = "Invalid Node"
+var peerServiceNodeNotReady = "Invalid Node"
 
 // Host address should be able to be scraped from the Request on the server-end
 type peerAdditionRequest struct {
@@ -444,14 +446,14 @@ func (rn *Node) writeSuccess(w http.ResponseWriter, body interface{}) {
 		}
 	}
 
-	if err = json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusSuccess, Data: respData}); err != nil {
+	if err = json.NewEncoder(w).Encode(peerServiceResponse{Status: peerServiceStatusSuccess, Data: respData}); err != nil {
 		rn.logger.Errorf(err.Error())
 	}
 }
 func (rn *Node) writeError(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusError, Message: err.Error()}); err != nil {
+	if err := json.NewEncoder(w).Encode(peerServiceResponse{Status: peerServiceStatusError, Message: err.Error()}); err != nil {
 		rn.logger.Errorf(err.Error())
 	}
 }
@@ -459,7 +461,7 @@ func (rn *Node) writeError(w http.ResponseWriter, code int, err error) {
 func (rn *Node) writeNodeNotReady(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusInternalServerError)
-	if err := json.NewEncoder(w).Encode(PeerServiceResponse{Status: PeerServiceStatusError, Message: PeerServiceNodeNotReady}); err != nil {
+	if err := json.NewEncoder(w).Encode(peerServiceResponse{Status: peerServiceStatusError, Message: peerServiceNodeNotReady}); err != nil {
 		rn.logger.Errorf(err.Error())
 	}
 }

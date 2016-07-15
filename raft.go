@@ -22,6 +22,8 @@ import (
 	"github.com/coreos/etcd/wal"
 )
 
+// LogData is the format of data you should expect in Apply operations on the FSM.
+// It is also what you should pass to Propose calls to a Node
 type LogData []byte
 
 // because WAL and Snap look to see if ANY files exist in the dir
@@ -30,6 +32,8 @@ type LogData []byte
 var walDirExtension = "/wal"
 var snapDirExtension = "/snap"
 
+// Node is a raft node. It is responsible for communicating with all other nodes on the cluster,
+// and in general doing all the rafty things
 type Node struct {
 	node           raft.Node
 	raftStorage    *raft.MemoryStorage
@@ -66,21 +70,29 @@ type Node struct {
 
 	stopc chan struct{}
 
-	logger CanoeLogger
+	logger Logger
 }
 
+// NodeConfig exposes all the configuration options of a Node
 type NodeConfig struct {
 	// If not specified or 0, will autogenerate a new UUID
+	// It is typically safe to let canoe autogenerate a UUID
 	ID uint64
 
 	// If not specified 0x100 will be used
 	ClusterID uint64
 
-	FSM            FSM
-	RaftPort       int
-	APIPort        int
+	FSM      FSM
+	RaftPort int
+	APIPort  int
+
+	// BootstrapPeers is a list of peers which we believe to be part of a cluster we wish to join.
+	// For now, this list is ignored if the node is marked as a BootstrapNode
 	BootstrapPeers []string
-	BootstrapNode  bool
+
+	// BootstrapNode is currently needed when bootstrapping a new cluster, a single node must mark itself
+	// as the bootstrap node.
+	BootstrapNode bool
 
 	// DataDir is where your data will be persisted to disk
 	// for use when either you need to restart a node, or
@@ -91,10 +103,11 @@ type NodeConfig struct {
 	// if nil, then default to no snapshotting
 	SnapshotConfig *SnapshotConfig
 
-	Logger CanoeLogger
+	Logger Logger
 }
 
-type CanoeLogger interface {
+// Logger is a clone of etcd.Logger interface. We have it cloned in case we want to add more functionality
+type Logger interface {
 	Debug(v ...interface{})
 	Debugf(format string, v ...interface{})
 
@@ -114,6 +127,7 @@ type CanoeLogger interface {
 	Panicf(format string, v ...interface{})
 }
 
+// SnapshotConfig defines when you want raft to take a snapshot and compact the WAL
 type SnapshotConfig struct {
 
 	// How often do you want to Snapshot and compact logs?
@@ -121,21 +135,19 @@ type SnapshotConfig struct {
 
 	// If the interval ticks but not enough logs have been commited then ignore
 	// the snapshot this interval
+	// This can be useful if you expect your snapshot procedure to have an expensive base cost
 	MinCommittedLogs uint64
-
-	// If the interval hasn't ticked but we've gone over a commited log threshold then snapshot
-	// Note: Use this with care. Snapshotting is a fairly expenseive process.
-	// Interval is suggested best method for triggering snapshots
-	MaxCommittedLogs uint64
 }
 
-// Change this. We NEED to have snapshotting for some features unfortunately
+// DefaultSnapshotConfig is what is used for snapshotting when SnapshotConfig isn't specified
+// Note: by default we do not snapshot
 var DefaultSnapshotConfig = &SnapshotConfig{
 	Interval:         -1 * time.Minute,
 	MinCommittedLogs: 0,
-	MaxCommittedLogs: 0,
 }
 
+// InitializationBackoffArgs defines the backoff arguments for initializing a Node into a cluster
+// as attempts to join or bootstrap a cluster are dependent on other nodes
 type InitializationBackoffArgs struct {
 	InitialInterval     time.Duration
 	Multiplier          float64
@@ -144,6 +156,7 @@ type InitializationBackoffArgs struct {
 	RandomizationFactor float64
 }
 
+// DefaultInitializationBackoffArgs are the default backoff args
 var DefaultInitializationBackoffArgs = &InitializationBackoffArgs{
 	InitialInterval:     500 * time.Millisecond,
 	RandomizationFactor: .5,
@@ -152,19 +165,19 @@ var DefaultInitializationBackoffArgs = &InitializationBackoffArgs{
 	MaxElapsedTime:      2 * time.Minute,
 }
 
+// UniqueID returns the unique id for the raft node.
+// This can be useful to get when defining your state machine so you don't have to
+// define a new ID for identification and ownership purposes if your application needs that
 func (rn *Node) UniqueID() uint64 {
 	return rn.id
 }
 
-// note: peers is only for asking to join the cluster.
-// It will not be able to connect if the peers don't respond to cluster node add request
-// This is because each node defines it's own uuid at startup. We must be told this UUID
-// by another node.
-// TODO: Look into which config options we want others to specify. For now hardcoded
-// TODO: Allow user to specify KV pairs of known nodes, and bypass the http discovery
-// NOTE: Peers are used EXCLUSIVELY to round-robin to other nodes and attempt to add
-//		ourselves to an existing cluster or bootstrap node
+// NewNode creates a new node from the config options
 func NewNode(args *NodeConfig) (*Node, error) {
+	// TODO: Look into which config options we want others to specify. For now hardcoded
+	// TODO: Allow user to specify KV pairs of known nodes, and bypass the http discovery
+	// NOTE: Peers are used EXCLUSIVELY to round-robin to other nodes and attempt to add
+	//		ourselves to an existing cluster or bootstrap node
 	rn, err := nonInitNode(args)
 	if err != nil {
 		return nil, err
@@ -184,8 +197,10 @@ func (rn *Node) advanceTicksForElection() error {
 	return nil
 }
 
-// TODO: Intermittent issues with restoring disconnected member from snapshot
+// Start starts the raft node
 func (rn *Node) Start() error {
+	// TODO: Intermittent issues with restoring disconnected member from snapshot
+
 	walEnabled := rn.walDir() != ""
 	rejoinCluster := rn.shouldRejoinCluster()
 	if rn.started {
@@ -262,10 +277,14 @@ func (rn *Node) Start() error {
 	return nil
 }
 
+// IsRunning reports if the raft node is running
 func (rn *Node) IsRunning() bool {
 	return rn.running
 }
 
+// Stop will stop the raft node.
+//
+// Note: stopping will not remove this node from the cluster. This means that it will affect consensus and quorum
 func (rn *Node) Stop() error {
 	close(rn.stopc)
 	rn.transport.Stop()
@@ -279,7 +298,7 @@ func (rn *Node) Stop() error {
 }
 
 // Destroy is a HARD stop. It first reconfigures the raft cluster
-// to remove itself(ONLY do this if you are intending to permenantly leave the cluster and know consequences around consensus) - read the raft paper's reconfiguration section before using this
+// to remove itself(ONLY do this if you are intending to permenantly leave the cluster and know consequences around consensus) - read the raft paper's reconfiguration section before using this.
 // It then halts all running goroutines
 //
 // WARNING! - Destroy will recursively remove everything under <DataDir>/snap and <DataDir>/wal
@@ -411,7 +430,7 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 	if rn.logger != nil {
 		rn.raftConfig.Logger = raft.Logger(rn.logger)
 	} else {
-		rn.logger = CanoeLogger(&raft.DefaultLogger{Logger: log.New(os.Stderr, "canoe", log.LstdFlags)})
+		rn.logger = Logger(&raft.DefaultLogger{Logger: log.New(os.Stderr, "canoe", log.LstdFlags)})
 		rn.raftConfig.Logger = raft.Logger(rn.logger)
 	}
 
@@ -565,7 +584,7 @@ func (rn *Node) scanReady() error {
 		snapTicker = time.NewTicker(1 * time.Second)
 		snapTicker.Stop()
 	} else if rn.snapshotConfig.Interval <= 0 {
-		errors.New("Must not disable snapshotting when datadir unspecified")
+		return errors.New("Must not disable snapshotting when datadir unspecified")
 	} else {
 		snapTicker = time.NewTicker(rn.snapshotConfig.Interval)
 	}
@@ -606,7 +625,6 @@ func (rn *Node) scanReady() error {
 
 		}
 	}
-	return nil
 }
 
 func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
@@ -657,6 +675,7 @@ type snapshotMetadata struct {
 	Peers map[uint64]confChangeNodeContext `json:"peers"`
 }
 
+// MarshalJSON fulfills the JSON interface
 func (p *snapshotMetadata) MarshalJSON() ([]byte, error) {
 	tmpStruct := &struct {
 		Peers map[string]confChangeNodeContext `json:"peers"`
@@ -671,6 +690,7 @@ func (p *snapshotMetadata) MarshalJSON() ([]byte, error) {
 	return json.Marshal(tmpStruct)
 }
 
+// UnmarshalJSON fulfills the JSON interface
 func (p *snapshotMetadata) UnmarshalJSON(data []byte) error {
 	tmpStruct := &struct {
 		Peers map[string]confChangeNodeContext `json:"peers"`
@@ -758,6 +778,8 @@ type confChangeNodeContext struct {
 	APIPort  int    `json:"api_port"`
 }
 
+// ErrorRemovedFromCluster is returned when an operation failed because this Node
+// has been removed from the cluster
 var ErrorRemovedFromCluster = errors.New("I have been removed from cluster")
 
 func (rn *Node) publishEntries(ents []raftpb.Entry) error {
@@ -809,17 +831,25 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) error {
 	return nil
 }
 
+// Propose asks raft to apply the data to the state machine
 func (rn *Node) Propose(data []byte) error {
 	return rn.node.Propose(context.TODO(), data)
 }
 
+// Process fulfills the requirement for rafthttp.Raft interface
 func (rn *Node) Process(ctx context.Context, m raftpb.Message) error {
 	return rn.node.Step(ctx, m)
 }
 
 // TODO: Get these defined
+
+// IsIDRemoved fulfills the requirement for rafthttp.Raft interface
 func (rn *Node) IsIDRemoved(id uint64) bool {
 	return false
 }
-func (rn *Node) ReportUnreachable(id uint64)                          {}
+
+// ReportUnreachable fulfills the interface for rafthttp.Raft
+func (rn *Node) ReportUnreachable(id uint64) {}
+
+// ReportSnapshot fulfills the requirement for rafthttp.Raft
 func (rn *Node) ReportSnapshot(id uint64, status raft.SnapshotStatus) {}
