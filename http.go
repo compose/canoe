@@ -171,7 +171,7 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 
 // TODO: Figure out how to handle these errs rather than just continue...
 // thought of having a slice of accumulated errors?
-// Or log.Warn on all failed attempts and if unsuccessful return a general failure
+// Or log.Warning on all failed attempts and if unsuccessful return a general failure
 // error
 func (rn *Node) requestRejoinCluster() error {
 	var resp *http.Response
@@ -186,15 +186,15 @@ func (rn *Node) requestRejoinCluster() error {
 
 		resp, err := http.Get(peerAPIURL)
 		if err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		defer resp.Body.Close()
 
 		if err = json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		if respData.Status == peerServiceStatusError {
@@ -259,8 +259,8 @@ func (rn *Node) requestSelfAddition() error {
 	for _, peer := range rn.bootstrapPeers {
 		mar, err := json.Marshal(reqData)
 		if err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		reader := bytes.NewReader(mar)
@@ -268,15 +268,15 @@ func (rn *Node) requestSelfAddition() error {
 
 		resp, err = http.Post(peerAPIURL, "application/json", reader)
 		if err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			//return err
 		}
 
 		defer resp.Body.Close()
 
 		if err = json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-			continue
-			return err
+			rn.logger.Warning(err.Error())
+			// return err
 		}
 
 		if respData.Status == peerServiceStatusError {
