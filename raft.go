@@ -584,7 +584,7 @@ func (rn *Node) scanReady() error {
 		snapTicker = time.NewTicker(1 * time.Second)
 		snapTicker.Stop()
 	} else if rn.snapshotConfig.Interval <= 0 {
-		errors.New("Must not disable snapshotting when datadir unspecified")
+		return errors.New("Must not disable snapshotting when datadir unspecified")
 	} else {
 		snapTicker = time.NewTicker(rn.snapshotConfig.Interval)
 	}
@@ -625,7 +625,6 @@ func (rn *Node) scanReady() error {
 
 		}
 	}
-	return nil
 }
 
 func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
