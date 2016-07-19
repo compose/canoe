@@ -5,7 +5,7 @@ package canoe
 import (
 	"bytes"
 	"fmt"
-	"github.com/sirupsen/logrus"
+	"github.com/Sirupsen/logrus"
 	"os"
 	"runtime"
 	"sort"
