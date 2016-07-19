@@ -224,8 +224,9 @@ func (rn *Node) deletePersistentData() error {
 		}
 	}
 	if rn.walDir() != "" {
-		if err := os.RemoveAll(rn.snapDir()); err != nil {
-			return err
+		//TODO: Should be delete walDir or snapDir()?
+		if err := os.RemoveAll(rn.walDir()); err != nil {
+			return errors.Wrap(err, "Error deleting WAL directory")
 		}
 	}
 	return nil
