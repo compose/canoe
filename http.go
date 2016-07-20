@@ -230,9 +230,8 @@ func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *http
 		return err
 	}
 
-	addURL := fmt.Sprintf("http://%s:%s",
-		reqHost,
-		strconv.Itoa(remoteMemberResponse.RaftPort))
+	addURL := fmt.Sprintf("http://%s",
+		net.JoinHostPort(reqHost, strconv.Itoa(remoteMemberResponse.RaftPort)))
 
 	rn.transport.AddPeer(types.ID(remoteMemberResponse.ID), []string{addURL})
 	rn.logger.Infof("Adding peer from HTTP request: %x\n", remoteMemberResponse.ID)
@@ -245,7 +244,7 @@ func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *http
 
 	for id, context := range remoteMemberResponse.RemotePeers {
 		if id != rn.id {
-			addURL := fmt.Sprintf("http://%s:%s", context.IP, strconv.Itoa(context.RaftPort))
+			addURL := fmt.Sprintf("http://%s", net.JoinHostPort(context.IP, strconv.Itoa(context.RaftPort)))
 			rn.transport.AddPeer(types.ID(id), []string{addURL})
 			rn.logger.Infof("Adding peer from HTTP request: %x\n", id)
 		}
@@ -323,7 +322,9 @@ func (rn *Node) requestSelfDeletion() error {
 		}
 
 		reader := bytes.NewReader(mar)
-		peerAPIURL := fmt.Sprintf("http://%s:%d%s", peerData.IP, peerData.APIPort, peerEndpoint)
+		peerAPIURL := fmt.Sprintf("http://%s%s",
+			net.JoinHostPort(peerData.IP, strconv.Itoa(peerData.APIPort)),
+			peerEndpoint)
 
 		req, err := http.NewRequest("DELETE", peerAPIURL, reader)
 		if err != nil {
