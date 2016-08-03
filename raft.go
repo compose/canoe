@@ -646,6 +646,7 @@ func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
 	for id, info := range snapStruct.Metadata.Peers {
 		raftURL := fmt.Sprintf("http://%s", net.JoinHostPort(info.IP, strconv.Itoa(info.RaftPort)))
 		rn.transport.AddPeer(types.ID(id), []string{raftURL})
+		rn.peerMap[id] = info
 	}
 
 	if err := rn.fsm.Restore(SnapshotData(snapStruct.Data)); err != nil {
