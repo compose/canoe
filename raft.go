@@ -346,7 +346,6 @@ func (rn *Node) Destroy() error {
 	rn.deletePersistentData()
 	rn.logger.Debug("Successfully deleted persistent data")
 
-	rn.running = false
 	rn.started = false
 	rn.initialized = false
 	return nil
