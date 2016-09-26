@@ -628,8 +628,6 @@ func (rn *Node) scanReady() error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	// create initial snapshot
-	rn.createSnapAndCompact(true)
 	for {
 		select {
 		case <-rn.stopc:
