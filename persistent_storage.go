@@ -94,11 +94,6 @@ func (rn *Node) restoreRaft() error {
 		return errors.Wrap(err, "Error restoring raft memory storage")
 	}
 
-	// NOTE: Step 6
-	/*if err := rn.restoreFSMFromWAL(ents); err != nil {
-		return errors.Wrap(err, "Error restoring FSM from WAL")
-	}*/
-
 	return nil
 }
 
@@ -181,19 +176,6 @@ func (rn *Node) restoreMetadata(wMetadata []byte) error {
 
 	rn.id, rn.cid = metaData.NodeID, metaData.ClusterID
 	rn.raftConfig.ID = metaData.NodeID
-	return nil
-}
-
-// restores FSM AND it sets the NodeID and ClusterID if present in Metadata
-func (rn *Node) restoreFSMFromWAL(ents []raftpb.Entry) error {
-	if rn.wal == nil {
-		return nil
-	}
-
-	if err := rn.publishEntries(ents); err != nil {
-		return errors.Wrap(err, "Error publishing entries from WAL")
-	}
-
 	return nil
 }
 
