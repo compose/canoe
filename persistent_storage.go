@@ -126,6 +126,9 @@ func (rn *Node) persistSnapshot(raftSnap raftpb.Snapshot) error {
 		if err := rn.wal.SaveSnapshot(walSnap); err != nil {
 			return errors.Wrap(err, "Error updating WAL with snapshot")
 		}
+		if err := rn.wal.ReleaseLockTo(raftSnap.Metadata.Index); err != nil {
+			return errors.Wrap(err, "Error releasing WAL locks")
+		}
 	}
 	return nil
 }
