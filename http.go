@@ -190,6 +190,7 @@ func (rn *Node) requestRejoinCluster() error {
 		resp, err := http.Get(peerAPIURL)
 		if err != nil {
 			rn.logger.Warning(err.Error())
+			continue
 			//return err
 		}
 
