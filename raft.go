@@ -606,8 +606,10 @@ func (rn *Node) isHealthy() bool {
 
 func (rn *Node) scanReady() error {
 	defer func() {
-		rn.logger.Info("Closed WAL")
-		rn.wal.Close()
+		if rn.wal != nil {
+			rn.logger.Info("Closed WAL")
+			rn.wal.Close()
+		}
 	}()
 	defer func(rn *Node) {
 		rn.running = false
