@@ -618,11 +618,9 @@ func (rn *Node) scanReady() error {
 	var snapTicker *time.Ticker
 
 	// if non-interval based then create a ticker which will never post to a chan
-	if rn.snapshotConfig.Interval <= 0 && rn.walDir() == "" {
+	if rn.snapshotConfig.Interval <= 0 {
 		snapTicker = time.NewTicker(1 * time.Second)
 		snapTicker.Stop()
-	} else if rn.snapshotConfig.Interval <= 0 {
-		return errors.New("Must not disable snapshotting when datadir unspecified")
 	} else {
 		snapTicker = time.NewTicker(rn.snapshotConfig.Interval)
 	}
