@@ -296,6 +296,7 @@ func (rn *Node) Start() error {
 	}(rn)
 	rn.started = true
 
+	// TODO: add case for when no peers or bootstrap specified it waits to get added.
 	if rejoinCluster {
 		rn.logger.Info("Rejoining canoe cluster")
 		if err := rn.selfRejoinCluster(); err != nil {
