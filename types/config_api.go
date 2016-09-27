@@ -21,8 +21,8 @@ type ConfigAdditionRequest struct {
 	ID       uint64 `json:"id"`
 	RaftPort int    `json:"raft_port"`
 	APIPort  int    `json:"api_port"`
+	Host     string `json:"host,omitempty"`
 	// Host is only for external requests for addition when doing strange things
-	Host string `json:"host,omitempty"`
 }
 
 type Peer struct {

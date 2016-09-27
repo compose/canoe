@@ -134,9 +134,16 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 		if err := json.NewDecoder(req.Body).Decode(&addReq); err != nil {
 			rn.writeError(w, http.StatusBadRequest, err)
 		}
-		reqHost, _, err := net.SplitHostPort(req.RemoteAddr)
-		if err != nil {
-			rn.writeError(w, 500, err)
+
+		var reqHost string
+		if addReq.Host == "" {
+			var err error
+			reqHost, _, err = net.SplitHostPort(req.RemoteAddr)
+			if err != nil {
+				rn.writeError(w, 500, err)
+			}
+		} else {
+			reqHost = addReq.Host
 		}
 		confContext := cTypes.Peer{
 			IP:       reqHost,

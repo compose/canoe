@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"github.com/compose/canoe/types"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
@@ -20,6 +19,7 @@ var (
 	nodeID         = fSet.Uint64("id", 0x0, "ID of node to add/delete")
 	nodeAPIPort    = fSet.Int("api-port", 1244, "API Port of node to add")
 	nodeRaftPort   = fSet.Int("raft-port", 1234, "Raft port of node to add")
+	nodeHost       = fSet.String("node-host", "", "Host address of the node you are wanting to add")
 )
 
 func main() {
@@ -38,7 +38,7 @@ func main() {
 		if *clusterMembers == "" || *nodeID == 0 || *nodeAPIPort == 0 || *nodeRaftPort == 0 {
 			log.Fatal("Must specify --cluster-members, --id, --api-port, and --raft-port")
 		}
-		if errs := addNode(strings.Split(*clusterMembers, ","), *nodeID, *nodeAPIPort, *nodeRaftPort); len(errs) > 0 {
+		if errs := addNode(strings.Split(*clusterMembers, ","), *nodeID, *nodeHost, *nodeAPIPort, *nodeRaftPort); len(errs) > 0 {
 			log.Fatalf("Error adding node: %+v", errs)
 		}
 	case "list-members":
@@ -51,23 +51,21 @@ func main() {
 	}
 }
 
-func addNode(members []string, id uint64, raftPort, apiPort int) []error {
-	requestData := struct {
-		ID       uint64 `json:"id"`
-		RaftPort int    `json:"raft_port"`
-		APIPort  int    `json:"api_port"`
-	}{
+func addNode(members []string, id uint64, host string, raftPort, apiPort int) []error {
+	requestData := types.ConfigAdditionRequest{
 		ID:       id,
 		RaftPort: raftPort,
 		APIPort:  apiPort,
+		Host:     host,
 	}
 
 	resp, errs := sendRequest(requestData, members, "POST")
 	if len(errs) > 0 {
 		return errs
 	}
-	respBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
+
+	var configResp types.ConfigServiceResponse
+	if err := json.NewDecoder(resp.Body).Decode(&configResp); err != nil {
 		return []error{err}
 	}
 
@@ -92,9 +90,9 @@ func listMembers(members []string) []error {
 }
 
 func deleteNode(members []string, id uint64) []error {
-	requestData := struct {
-		ID uint64 `json:"id"`
-	}{ID: id}
+	requestData := types.ConfigDeletionRequest{
+		ID: id,
+	}
 
 	_, errs := sendRequest(requestData, members, "DELETE")
 	if len(errs) > 0 {
