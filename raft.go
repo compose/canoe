@@ -260,7 +260,22 @@ func (rn *Node) Start() error {
 	go func(rn *Node) {
 		rn.logger.Info("Scanning for new raft logs")
 		if err := rn.scanReady(); err != nil {
-			rn.logger.Fatalf("%+v", err)
+			rn.logger.Errorf("%+v", err)
+			if errors.Cause(err) == ErrorRemovedFromCluster {
+				rn.logger.Info("Trying to destroy canoe data")
+				if err := rn.Destroy(); err != nil {
+					rn.logger.Fatalf("%+v", err)
+				}
+				rn.logger.Info("Canoe data destroyed")
+				os.Exit(1)
+			} else {
+				rn.logger.Info("Trying to cleanly stop canoe")
+				if err := rn.Stop(); err != nil {
+					rn.logger.Fatalf("%+v", err)
+				}
+				rn.logger.Info("Canoe cleanly stopped")
+				os.Exit(1)
+			}
 		}
 	}(rn)
 
