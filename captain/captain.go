@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"github.com/compose/canoe/types"
 	"io/ioutil"
 	"log"
@@ -70,7 +71,7 @@ func addNode(members []string, id uint64, raftPort, apiPort int) []error {
 		return []error{err}
 	}
 
-	log.Println(string(respBytes))
+	fmt.Println(string(configResp.Data))
 
 	return []error{}
 }
@@ -85,7 +86,7 @@ func listMembers(members []string) []error {
 		return []error{err}
 	}
 
-	log.Println(string(configResp.Data))
+	fmt.Println(string(configResp.Data))
 
 	return []error{}
 }
@@ -99,7 +100,7 @@ func deleteNode(members []string, id uint64) []error {
 	if len(errs) > 0 {
 		return errs
 	}
-	log.Println("Successfully deleted node: %x", id)
+	fmt.Println("Successfully deleted node: %x", id)
 
 	return []error{}
 }
