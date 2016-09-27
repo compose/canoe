@@ -49,11 +49,12 @@ type ConfigMembershipResponseData struct {
 
 // This needs to be a different struct because it is important to seperate
 // The API/Raft/ID of the node we're pinging from other remote nodes
+// TODO: embedded struct with Peer
 type ConfigPeerData struct {
 	RaftPort    int             `json:"raft_port"`
 	APIPort     int             `json:"api_port"`
 	ID          uint64          `json:"id"`
-	RemotePeers map[uint64]Peer `json:"peers"`
+	RemotePeers map[uint64]Peer `json:"remote_peers"`
 }
 
 func (p *ConfigPeerData) MarshalJSON() ([]byte, error) {
@@ -61,7 +62,7 @@ func (p *ConfigPeerData) MarshalJSON() ([]byte, error) {
 		RaftPort    int             `json:"raft_port"`
 		APIPort     int             `json:"api_port"`
 		ID          uint64          `json:"id"`
-		RemotePeers map[string]Peer `json:"peers"`
+		RemotePeers map[string]Peer `json:"remote_peers"`
 	}{
 		RaftPort:    p.RaftPort,
 		APIPort:     p.APIPort,
@@ -83,7 +84,7 @@ func (p *ConfigPeerData) UnmarshalJSON(data []byte) error {
 		RaftPort    int             `json:"raft_port"`
 		APIPort     int             `json:"api_port"`
 		ID          uint64          `json:"id"`
-		RemotePeers map[string]Peer `json:"peers"`
+		RemotePeers map[string]Peer `json:"remote_peers"`
 	}{}
 
 	if err := json.Unmarshal(data, tmpStruct); err != nil {
