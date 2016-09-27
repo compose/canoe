@@ -6,14 +6,16 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/cenk/backoff"
+	cTypes "github.com/compose/canoe/types"
 
 	"github.com/coreos/etcd/etcdserver/stats"
-	"github.com/coreos/etcd/pkg/types"
+	eTypes "github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
 	"github.com/coreos/etcd/rafthttp"
@@ -39,7 +41,7 @@ type Node struct {
 	transport      *rafthttp.Transport
 	bootstrapPeers []string
 	bootstrapNode  bool
-	peerMap        map[uint64]confChangeNodeContext
+	peerMap        map[uint64]cTypes.Peer
 	id             uint64
 	cid            uint64
 	raftPort       int
@@ -434,7 +436,7 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 		fsm:             args.FSM,
 		initialized:     false,
 		observers:       make(map[uint64]*Observer),
-		peerMap:         make(map[uint64]confChangeNodeContext),
+		peerMap:         make(map[uint64]cTypes.Peer),
 		initBackoffArgs: args.InitBackoff,
 		snapshotConfig:  args.SnapshotConfig,
 		dataDir:         args.DataDir,
@@ -477,8 +479,8 @@ func (rn *Node) attachTransport() error {
 	//ID TBA on raft restoration creation
 	// due to unfortunate dependency on the restore process needing
 	rn.transport = &rafthttp.Transport{
-		ID:          types.ID(rn.id),
-		ClusterID:   types.ID(rn.cid),
+		ID:          eTypes.ID(rn.id),
+		ClusterID:   eTypes.ID(rn.cid),
 		Raft:        rn,
 		Snapshotter: rn.ss,
 		ServerStats: ss,
@@ -676,7 +678,7 @@ func (rn *Node) restoreFSMFromSnapshot(raftSnap raftpb.Snapshot) error {
 	for id, info := range snapStruct.Metadata.Peers {
 		raftURL := fmt.Sprintf("http://%s", net.JoinHostPort(info.IP, strconv.Itoa(info.RaftPort)))
 		rn.logger.Debug("Adding transport peer from Snapshot: %x - %s", id, raftURL)
-		rn.transport.AddPeer(types.ID(id), []string{raftURL})
+		rn.transport.AddPeer(eTypes.ID(id), []string{raftURL})
 		rn.peerMap[id] = info
 	}
 
@@ -711,15 +713,15 @@ type snapshot struct {
 }
 
 type snapshotMetadata struct {
-	Peers map[uint64]confChangeNodeContext `json:"peers"`
+	Peers map[uint64]cTypes.Peer `json:"peers"`
 }
 
 // MarshalJSON fulfills the JSON interface
 func (p *snapshotMetadata) MarshalJSON() ([]byte, error) {
 	tmpStruct := &struct {
-		Peers map[string]confChangeNodeContext `json:"peers"`
+		Peers map[string]cTypes.Peer `json:"peers"`
 	}{
-		Peers: make(map[string]confChangeNodeContext),
+		Peers: make(map[string]cTypes.Peer),
 	}
 
 	for key, val := range p.Peers {
@@ -732,14 +734,14 @@ func (p *snapshotMetadata) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON fulfills the JSON interface
 func (p *snapshotMetadata) UnmarshalJSON(data []byte) error {
 	tmpStruct := &struct {
-		Peers map[string]confChangeNodeContext `json:"peers"`
+		Peers map[string]cTypes.Peer `json:"peers"`
 	}{}
 
 	if err := json.Unmarshal(data, tmpStruct); err != nil {
 		return errors.Wrap(err, "Error unmarshaling snapshot metadata")
 	}
 
-	p.Peers = make(map[uint64]confChangeNodeContext)
+	p.Peers = make(map[uint64]cTypes.Peer)
 
 	for key, val := range tmpStruct.Peers {
 		convKey, err := strconv.ParseUint(key, 10, 64)
@@ -818,12 +820,6 @@ func (rn *Node) commitsSinceLastSnap() uint64 {
 	return curIndex - raftSnap.Metadata.Index
 }
 
-type confChangeNodeContext struct {
-	IP       string `json:"ip"`
-	RaftPort int    `json:"raft_port"`
-	APIPort  int    `json:"api_port"`
-}
-
 // ErrorRemovedFromCluster is returned when an operation failed because this Node
 // has been removed from the cluster
 var ErrorRemovedFromCluster = errors.New("I have been removed from cluster")
@@ -853,7 +849,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) error {
 			switch cc.Type {
 			case raftpb.ConfChangeAddNode:
 				if len(cc.Context) > 0 {
-					var ctxData confChangeNodeContext
+					var ctxData cTypes.Peer
 					if err := json.Unmarshal(cc.Context, &ctxData); err != nil {
 						return errors.Wrap(err, "Error unmarshalling add node request")
 					}
@@ -862,7 +858,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) error {
 
 					if cc.NodeID != rn.id {
 						rn.logger.Debug("Adding transport peer from raft entry: %x - %s", cc.NodeID, raftURL)
-						rn.transport.AddPeer(types.ID(cc.NodeID), []string{raftURL})
+						rn.transport.AddPeer(eTypes.ID(cc.NodeID), []string{raftURL})
 					}
 					rn.peerMap[cc.NodeID] = ctxData
 				}
@@ -870,7 +866,7 @@ func (rn *Node) publishEntries(ents []raftpb.Entry) error {
 				if cc.NodeID == uint64(rn.id) {
 					return ErrorRemovedFromCluster
 				}
-				rn.transport.RemovePeer(types.ID(cc.NodeID))
+				rn.transport.RemovePeer(eTypes.ID(cc.NodeID))
 				delete(rn.peerMap, cc.NodeID)
 			}
 
