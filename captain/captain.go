@@ -14,12 +14,12 @@ import (
 )
 
 var (
-	fSet           = flag.NewFlagSet("", flag.ExitOnError)
-	clusterMembers = fSet.String("cluster-members", "", "Members of the cluster. Request made round robin until a good response returned")
-	nodeID         = fSet.Uint64("id", 0x0, "ID of node to add/delete")
-	nodeAPIPort    = fSet.Int("api-port", 1244, "API Port of node to add")
-	nodeRaftPort   = fSet.Int("raft-port", 1234, "Raft port of node to add")
-	nodeHost       = fSet.String("node-host", "", "Host address of the node you are wanting to add")
+	fSet                  = flag.NewFlagSet("", flag.ExitOnError)
+	clusterMembers        = fSet.String("cluster-members", "", "Members of the cluster. Request made round robin until a good response returned")
+	nodeID                = fSet.Uint64("id", 0x0, "ID of node to add/delete")
+	nodeConfigurationPort = fSet.Int("config-port", 1244, "API Port of node to add")
+	nodeRaftPort          = fSet.Int("raft-port", 1234, "Raft port of node to add")
+	nodeHost              = fSet.String("node-host", "", "Host address of the node you are wanting to add")
 )
 
 func main() {
@@ -35,10 +35,10 @@ func main() {
 			log.Fatalf("Error deleting node: %+v", errs)
 		}
 	case "add-node":
-		if *clusterMembers == "" || *nodeID == 0 || *nodeAPIPort == 0 || *nodeRaftPort == 0 {
-			log.Fatal("Must specify --cluster-members, --id, --api-port, and --raft-port")
+		if *clusterMembers == "" || *nodeID == 0 || *nodeConfigurationPort == 0 || *nodeRaftPort == 0 {
+			log.Fatal("Must specify --cluster-members, --id, --config-port, and --raft-port")
 		}
-		if errs := addNode(strings.Split(*clusterMembers, ","), *nodeID, *nodeHost, *nodeAPIPort, *nodeRaftPort); len(errs) > 0 {
+		if errs := addNode(strings.Split(*clusterMembers, ","), *nodeID, *nodeHost, *nodeConfigurationPort, *nodeRaftPort); len(errs) > 0 {
 			log.Fatalf("Error adding node: %+v", errs)
 		}
 	case "list-members":
@@ -51,12 +51,12 @@ func main() {
 	}
 }
 
-func addNode(members []string, id uint64, host string, raftPort, apiPort int) []error {
+func addNode(members []string, id uint64, host string, raftPort, configPort int) []error {
 	requestData := types.ConfigAdditionRequest{
-		ID:       id,
-		RaftPort: raftPort,
-		APIPort:  apiPort,
-		Host:     host,
+		ID:                id,
+		RaftPort:          raftPort,
+		ConfigurationPort: configPort,
+		Host:              host,
 	}
 
 	resp, errs := sendRequest(requestData, members, "POST")

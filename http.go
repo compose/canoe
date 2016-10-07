@@ -17,13 +17,9 @@ import (
 
 var peerEndpoint = "/peers"
 
-// FSMAPIEndpoint defines where the endpoint for the FSM handler will be
-var FSMAPIEndpoint = "/api"
-
 func (rn *Node) peerAPI() *mux.Router {
 	r := mux.NewRouter()
 
-	rn.fsm.RegisterAPI(r.PathPrefix(FSMAPIEndpoint).Subrouter())
 	r.HandleFunc(peerEndpoint, rn.peerAddHandlerFunc()).Methods("POST")
 	r.HandleFunc(peerEndpoint, rn.peerDeleteHandlerFunc()).Methods("DELETE")
 	r.HandleFunc(peerEndpoint, rn.peerMembersHandlerFunc()).Methods("GET")
@@ -34,7 +30,7 @@ func (rn *Node) peerAPI() *mux.Router {
 func (rn *Node) serveHTTP() error {
 	router := rn.peerAPI()
 
-	ln, err := newStoppableListener(fmt.Sprintf(":%d", rn.apiPort), rn.stopc)
+	ln, err := newStoppableListener(fmt.Sprintf(":%d", rn.configPort), rn.stopc)
 	if err != nil {
 		panic(err)
 	}
@@ -76,10 +72,10 @@ func (rn *Node) handlePeerMembersRequest(w http.ResponseWriter, req *http.Reques
 	} else {
 		membersResp := &cTypes.ConfigMembershipResponseData{
 			cTypes.ConfigPeerData{
-				RaftPort:    rn.raftPort,
-				APIPort:     rn.apiPort,
-				ID:          rn.id,
-				RemotePeers: rn.peerMap,
+				RaftPort:          rn.raftPort,
+				ConfigurationPort: rn.configPort,
+				ID:                rn.id,
+				RemotePeers:       rn.peerMap,
 			},
 		}
 
@@ -146,9 +142,9 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 			reqHost = addReq.Host
 		}
 		confContext := cTypes.Peer{
-			IP:       reqHost,
-			RaftPort: addReq.RaftPort,
-			APIPort:  addReq.APIPort,
+			IP:                reqHost,
+			RaftPort:          addReq.RaftPort,
+			ConfigurationPort: addReq.ConfigurationPort,
 		}
 
 		confContextData, err := json.Marshal(confContext)
@@ -167,10 +163,10 @@ func (rn *Node) handlePeerAddRequest(w http.ResponseWriter, req *http.Request) {
 
 		addResp := &cTypes.ConfigAdditionResponseData{
 			cTypes.ConfigPeerData{
-				RaftPort:    rn.raftPort,
-				APIPort:     rn.apiPort,
-				ID:          rn.id,
-				RemotePeers: rn.peerMap,
+				RaftPort:          rn.raftPort,
+				ConfigurationPort: rn.configPort,
+				ID:                rn.id,
+				RemotePeers:       rn.peerMap,
 			},
 		}
 
@@ -245,9 +241,9 @@ func (rn *Node) addPeersFromRemote(remotePeer string, remoteMemberResponse *cTyp
 	rn.transport.AddPeer(eTypes.ID(remoteMemberResponse.ID), []string{addURL})
 	rn.logger.Info("Adding peer from HTTP request: %x\n", remoteMemberResponse.ID)
 	rn.peerMap[remoteMemberResponse.ID] = cTypes.Peer{
-		IP:       reqHost,
-		RaftPort: remoteMemberResponse.RaftPort,
-		APIPort:  remoteMemberResponse.APIPort,
+		IP:                reqHost,
+		RaftPort:          remoteMemberResponse.RaftPort,
+		ConfigurationPort: remoteMemberResponse.ConfigurationPort,
 	}
 	rn.logger.Debugf("Current Peer Map: %v", rn.peerMap)
 
@@ -268,9 +264,9 @@ func (rn *Node) requestSelfAddition() error {
 	var respData cTypes.ConfigServiceResponse
 
 	reqData := cTypes.ConfigAdditionRequest{
-		ID:       rn.id,
-		RaftPort: rn.raftPort,
-		APIPort:  rn.apiPort,
+		ID:                rn.id,
+		RaftPort:          rn.raftPort,
+		ConfigurationPort: rn.configPort,
 	}
 
 	for _, peer := range rn.bootstrapPeers {
@@ -332,7 +328,7 @@ func (rn *Node) requestSelfDeletion() error {
 
 		reader := bytes.NewReader(mar)
 		peerAPIURL := fmt.Sprintf("http://%s%s",
-			net.JoinHostPort(peerData.IP, strconv.Itoa(peerData.APIPort)),
+			net.JoinHostPort(peerData.IP, strconv.Itoa(peerData.ConfigurationPort)),
 			peerEndpoint)
 
 		req, err := http.NewRequest("DELETE", peerAPIURL, reader)

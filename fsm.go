@@ -1,9 +1,5 @@
 package canoe
 
-import (
-	"github.com/gorilla/mux"
-)
-
 // SnapshotData defines what a snapshot should look like
 type SnapshotData []byte
 
@@ -22,10 +18,4 @@ type FSM interface {
 
 	// Restore should take a snapshot, and use it to restore the state of the FSM
 	Restore(snap SnapshotData) error
-
-	// RegisterAPI gives you the ability to register an endpoint to canoe's
-	// HTTP Server
-	// Add handlefuncs to the mux router to have them appear at endpoint
-	// 0.0.0.0:BIND_PORT/api/[endpoints]
-	RegisterAPI(router *mux.Router)
 }

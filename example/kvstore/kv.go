@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/compose/canoe"
-	"github.com/gorilla/mux"
 	"sync"
 )
 
@@ -173,8 +172,4 @@ func (kv *KV) Restore(data canoe.SnapshotData) error {
 
 	kv.stateMap = newStateMap
 	return nil
-}
-
-func (kv *KV) RegisterAPI(router *mux.Router) {
-	return
 }
