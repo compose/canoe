@@ -22,5 +22,5 @@ In different terminals:
 ```
 ./kvstore --bootstrap  --raft-port=1234 --api-port=1244 --data-dir="./data1"
 ./kvstore --peers="http://localhost:1244" --raft-port=1235 --api-port=1245 --data-dir="./data2"
-./lifeboat --peers="http://localhost:1244,http://localhost:1245" --raft-port=1236 --api-port=1236
+./lifeboat --peers="http://localhost:1244,http://localhost:1245" --raft-port=1236 --api-port=1237
 ```
