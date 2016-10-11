@@ -46,7 +46,7 @@ type Node struct {
 	cid            uint64
 	raftPort       int
 
-	apiPort int
+	configPort int
 
 	raftConfig *raft.Config
 
@@ -83,9 +83,9 @@ type NodeConfig struct {
 	// If not specified 0x100 will be used
 	ClusterID uint64
 
-	FSM      FSM
-	RaftPort int
-	APIPort  int
+	FSM               FSM
+	RaftPort          int
+	ConfigurationPort int
 
 	// BootstrapPeers is a list of peers which we believe to be part of a cluster we wish to join.
 	// For now, this list is ignored if the node is marked as a BootstrapNode
@@ -448,7 +448,7 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 		id:              args.ID,
 		cid:             args.ClusterID,
 		raftPort:        args.RaftPort,
-		apiPort:         args.APIPort,
+		configPort:      args.ConfigurationPort,
 		fsm:             args.FSM,
 		initialized:     false,
 		observers:       make(map[uint64]*Observer),

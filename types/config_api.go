@@ -8,7 +8,6 @@ import (
 
 var (
 	ConfigServiceEndpoint = "/peer"
-	FSMAPIEndpoint        = "/fsm"
 )
 
 type ConfigDeletionRequest struct {
@@ -18,17 +17,17 @@ type ConfigDeletionRequest struct {
 // Host address should be able to be scraped from the Request on the server-end
 // Therefore the request shouldn't be made public unless this changes
 type ConfigAdditionRequest struct {
-	ID       uint64 `json:"id"`
-	RaftPort int    `json:"raft_port"`
-	APIPort  int    `json:"api_port"`
-	Host     string `json:"host,omitempty"`
+	ID                uint64 `json:"id"`
+	RaftPort          int    `json:"raft_port"`
+	ConfigurationPort int    `json:"config_port"`
+	Host              string `json:"host,omitempty"`
 	// Host is only for external requests for addition when doing strange things
 }
 
 type Peer struct {
-	IP       string `json:"ip"`
-	RaftPort int    `json:"raft_port"`
-	APIPort  int    `json:"api_port"`
+	IP                string `json:"ip"`
+	RaftPort          int    `json:"raft_port"`
+	ConfigurationPort int    `json:"config_port"`
 }
 
 type ConfigServiceResponse struct {
@@ -51,23 +50,23 @@ type ConfigMembershipResponseData struct {
 // The API/Raft/ID of the node we're pinging from other remote nodes
 // TODO: embedded struct with Peer
 type ConfigPeerData struct {
-	RaftPort    int             `json:"raft_port"`
-	APIPort     int             `json:"api_port"`
-	ID          uint64          `json:"id"`
-	RemotePeers map[uint64]Peer `json:"remote_peers"`
+	RaftPort          int             `json:"raft_port"`
+	ConfigurationPort int             `json:"config_port"`
+	ID                uint64          `json:"id"`
+	RemotePeers       map[uint64]Peer `json:"remote_peers"`
 }
 
 func (p *ConfigPeerData) MarshalJSON() ([]byte, error) {
 	tmpStruct := &struct {
-		RaftPort    int             `json:"raft_port"`
-		APIPort     int             `json:"api_port"`
-		ID          uint64          `json:"id"`
-		RemotePeers map[string]Peer `json:"remote_peers"`
+		RaftPort          int             `json:"raft_port"`
+		ConfigurationPort int             `json:"config_port"`
+		ID                uint64          `json:"id"`
+		RemotePeers       map[string]Peer `json:"remote_peers"`
 	}{
-		RaftPort:    p.RaftPort,
-		APIPort:     p.APIPort,
-		ID:          p.ID,
-		RemotePeers: make(map[string]Peer),
+		RaftPort:          p.RaftPort,
+		ConfigurationPort: p.ConfigurationPort,
+		ID:                p.ID,
+		RemotePeers:       make(map[string]Peer),
 	}
 
 	for key, val := range p.RemotePeers {
@@ -81,17 +80,17 @@ func (p *ConfigPeerData) MarshalJSON() ([]byte, error) {
 
 func (p *ConfigPeerData) UnmarshalJSON(data []byte) error {
 	tmpStruct := &struct {
-		RaftPort    int             `json:"raft_port"`
-		APIPort     int             `json:"api_port"`
-		ID          uint64          `json:"id"`
-		RemotePeers map[string]Peer `json:"remote_peers"`
+		RaftPort          int             `json:"raft_port"`
+		ConfigurationPort int             `json:"config_port"`
+		ID                uint64          `json:"id"`
+		RemotePeers       map[string]Peer `json:"remote_peers"`
 	}{}
 
 	if err := json.Unmarshal(data, tmpStruct); err != nil {
 		return errors.Wrap(err, "Error unmarshalling http peer data")
 	}
 
-	p.APIPort = tmpStruct.APIPort
+	p.ConfigurationPort = tmpStruct.ConfigurationPort
 	p.RaftPort = tmpStruct.RaftPort
 	p.ID = tmpStruct.ID
 	p.RemotePeers = make(map[uint64]Peer)

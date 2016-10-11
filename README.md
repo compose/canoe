@@ -19,20 +19,20 @@ Endpoint `:<APIPort>/peers`
 Request JSON Data:
   * `id` - The ID of the new canoe node to add to the cluster
   * `raft_port` - The RaftPort of the new canoe node to add to the cluster
-  * `api_port` - The APIPort of the new canoe node to add to the cluster
+  * `config_port` - The APIPort of the new canoe node to add to the cluster
 
 Response JSON Data:
   * `id` - The ID of the canoe node which the request was sent to
   * `raft_port` - The RaftPort of the canoe node which the request was sent to
-  * `api_port` - The APIPort of the canoe node which the request was send to
-  * `remote_peers` - List of other peers in the canoe cluster with `id`, `raft_port`, and `api_port` as fields
+  * `config_port` - The APIPort of the canoe node which the request was send to
+  * `remote_peers` - List of other peers in the canoe cluster with `id`, `raft_port`, and `config_port` as fields
 
 ### GET
 Response JSON Data:
   * `id` - The ID of the canoe node which the request was sent to
   * `raft_port` - The RaftPort of the canoe node which the request was sent to
-  * `api_port` - The APIPort of the canoe node which the request was send to
-  * `remote_peers` - List of other peers in the canoe cluster with `id`, `raft_port`, and `api_port` as fields
+  * `config_port` - The APIPort of the canoe node which the request was send to
+  * `remote_peers` - List of other peers in the canoe cluster with `id`, `raft_port`, and `config_port` as fields
 
 ### DELETE
 Request JSON Data:

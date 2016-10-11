@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	apiPort := flag.Int("api-port", 8080, "Port to serve API and discovery")
+	configPort := flag.Int("config-port", 8080, "Port to serve API and discovery")
 	raftPort := flag.Int("raft-port", 1234, "Port to serve raft")
 	bootstrap := flag.Bool("bootstrap", false, "Is this the bootstrap node")
 	peers := flag.String("peers", "", "List of peers")
@@ -24,12 +24,12 @@ func main() {
 
 	kv := NewKV()
 	config := &canoe.NodeConfig{
-		FSM:            kv,
-		RaftPort:       *raftPort,
-		APIPort:        *apiPort,
-		BootstrapPeers: strings.Split(*peers, ","),
-		BootstrapNode:  *bootstrap,
-		DataDir:        *dataDir,
+		FSM:               kv,
+		RaftPort:          *raftPort,
+		ConfigurationPort: *configPort,
+		BootstrapPeers:    strings.Split(*peers, ","),
+		BootstrapNode:     *bootstrap,
+		DataDir:           *dataDir,
 		SnapshotConfig: &canoe.SnapshotConfig{
 			Interval: 5 * time.Second,
 		},
