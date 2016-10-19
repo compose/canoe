@@ -15,6 +15,7 @@ import (
 	cTypes "github.com/compose/canoe/types"
 
 	"github.com/coreos/etcd/etcdserver/stats"
+	"github.com/coreos/etcd/pkg/fileutil"
 	eTypes "github.com/coreos/etcd/pkg/types"
 	"github.com/coreos/etcd/raft"
 	"github.com/coreos/etcd/raft/raftpb"
@@ -138,13 +139,18 @@ type SnapshotConfig struct {
 	// the snapshot this interval
 	// This can be useful if you expect your snapshot procedure to have an expensive base cost
 	MinCommittedLogs uint64
+
+	// MaxRetainedSnapshots specifies how many snapshots you want to save from
+	// purging at a given time
+	MaxRetainedSnapshots uint
 }
 
 // DefaultSnapshotConfig is what is used for snapshotting when SnapshotConfig isn't specified
 // Note: by default we do not snapshot
 var DefaultSnapshotConfig = &SnapshotConfig{
-	Interval:         -1 * time.Minute,
-	MinCommittedLogs: 0,
+	Interval:             -1 * time.Minute,
+	MinCommittedLogs:     0,
+	MaxRetainedSnapshots: 0,
 }
 
 // InitializationBackoffArgs defines the backoff arguments for initializing a Node into a cluster
@@ -278,6 +284,19 @@ func (rn *Node) Start() error {
 			}
 		}
 	}(rn)
+
+	// periodically cleanup old snapshots
+	if rn.snapDir() != "" && rn.snapshotConfig.Interval > 0 && rn.snapshotConfig.MaxRetainedSnapshots > 0 {
+		go func(rn *Node) {
+			errc := fileutil.PurgeFile(rn.snapDir(), "snap", rn.snapshotConfig.MaxRetainedSnapshots, rn.snapshotConfig.Interval, rn.stopc)
+			select {
+			case e := <-errc:
+				rn.logger.Fatalf("failed to purge snap file %+v", e)
+			case <-rn.stopc:
+				return
+			}
+		}(rn)
+	}
 
 	// Start config http service
 	go func(rn *Node) {
