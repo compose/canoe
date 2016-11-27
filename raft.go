@@ -51,9 +51,9 @@ type Node struct {
 
 	raftConfig *raft.Config
 
-	started     bool
-	initialized bool
-	running     bool
+	started     AtomicBool
+	initialized AtomicBool
+	running     AtomicBool
 
 	proposeC chan string
 	fsm      FSM
@@ -210,7 +210,7 @@ func (rn *Node) Start() error {
 
 	walEnabled := rn.walDir() != ""
 	rejoinCluster := rn.shouldRejoinCluster()
-	if rn.started {
+	if rn.started.IsSet() {
 		return nil
 	}
 
@@ -261,7 +261,7 @@ func (rn *Node) Start() error {
 	}
 	rn.logger.Debug("Successfully advanced election ticks")
 
-	rn.initialized = true
+	rn.initialized.Set()
 
 	go func(rn *Node) {
 		rn.logger.Info("Scanning for new raft logs")
@@ -313,7 +313,7 @@ func (rn *Node) Start() error {
 			rn.logger.Fatalf("%+v", err)
 		}
 	}(rn)
-	rn.started = true
+	rn.started.Set()
 
 	// TODO: add case for when no peers or bootstrap specified it waits to get added.
 	if rejoinCluster {
@@ -329,13 +329,13 @@ func (rn *Node) Start() error {
 	}
 
 	// final step to mark node as initialized
-	rn.running = true
+	rn.running.Set()
 	return nil
 }
 
 // IsRunning reports if the raft node is running
 func (rn *Node) IsRunning() bool {
-	return rn.running
+	return rn.running.IsSet()
 }
 
 // Stop will stop the raft node.
@@ -348,12 +348,12 @@ func (rn *Node) Stop() error {
 	rn.logger.Debug("Stopping raft transporter")
 	rn.transport.Stop()
 	// TODO: Don't poll stuff here
-	for rn.running {
+	for rn.running.IsSet() {
 		time.Sleep(200 * time.Millisecond)
 	}
 	rn.logger.Info("Canoe has stopped")
-	rn.started = false
-	rn.initialized = false
+	rn.started.Unset()
+	rn.initialized.Unset()
 	return nil
 }
 
@@ -369,12 +369,12 @@ func (rn *Node) Destroy() error {
 	}
 	rn.logger.Debug("Successfully removed self from canoe cluster")
 
-	if rn.running {
+	if rn.running.IsSet() {
 		close(rn.stopc)
 		rn.logger.Debug("Stopping raft transport layer")
 		rn.transport.Stop()
 		// TODO: Have a stopped chan for triggering this action
-		for rn.running {
+		for rn.running.IsSet() {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
@@ -383,8 +383,8 @@ func (rn *Node) Destroy() error {
 	rn.deletePersistentData()
 	rn.logger.Debug("Successfully deleted persistent data")
 
-	rn.started = false
-	rn.initialized = false
+	rn.started.Unset()
+	rn.initialized.Unset()
 	return nil
 }
 
@@ -469,7 +469,7 @@ func nonInitNode(args *NodeConfig) (*Node, error) {
 		raftPort:        args.RaftPort,
 		configPort:      args.ConfigurationPort,
 		fsm:             args.FSM,
-		initialized:     false,
+		initialized:     0,
 		observers:       make(map[uint64]*Observer),
 		peerMap:         make(map[uint64]cTypes.Peer),
 		initBackoffArgs: args.InitBackoff,
@@ -633,12 +633,12 @@ func (rn *Node) proposePeerDeletion(delReq *raftpb.ConfChange, async bool) error
 }
 
 func (rn *Node) canAlterPeer() bool {
-	return rn.isHealthy() && rn.initialized
+	return rn.isHealthy() && rn.initialized.IsSet()
 }
 
 // TODO: Define healthy better
 func (rn *Node) isHealthy() bool {
-	return rn.running
+	return rn.running.IsSet()
 }
 
 func (rn *Node) scanReady() error {
@@ -649,7 +649,7 @@ func (rn *Node) scanReady() error {
 		}
 	}()
 	defer func(rn *Node) {
-		rn.running = false
+		rn.running.Unset()
 	}(rn)
 
 	var snapTicker *time.Ticker
