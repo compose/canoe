@@ -140,10 +140,6 @@ func (rn *Node) initWAL(walSnap walpb.Snapshot) error {
 
 	if !wal.Exist(rn.walDir()) {
 
-		if err := os.MkdirAll(rn.walDir(), 0750); err != nil && !os.IsExist(err) {
-			return errors.Wrap(err, "Error creating directory for raft WAL")
-		}
-
 		metaStruct := &walMetadata{
 			NodeID:    rn.id,
 			ClusterID: rn.cid,
