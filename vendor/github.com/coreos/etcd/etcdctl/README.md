@@ -221,7 +221,7 @@ OK
 
 ### WATCH [options] [key or prefix] [range_end]
 
-Watch watches events stream on keys or prefixes, [key or prefix, range_end) if `range-end` is given. The watch command runs until it encounters an error or is terminated by the user.
+Watch watches events stream on keys or prefixes, [key or prefix, range_end) if `range-end` is given. The watch command runs until it encounters an error or is terminated by the user.  If range_end is given, it must be lexicographically greater than key or "\x00".
 
 #### Options
 
@@ -230,6 +230,8 @@ Watch watches events stream on keys or prefixes, [key or prefix, range_end) if `
 - interactive -- begins an interactive watch session
 
 - prefix -- watch on a prefix if prefix is set.
+
+- prev-kv -- get the previous key-value pair before the event happens.
 
 - rev -- the revision to start watching. Specifying a revision is useful for observing past events.
 
@@ -245,7 +247,7 @@ watch [options] <key or prefix>\n
 
 ##### Simple reply
 
-- \<event\>\n\<key\>\n\<value\>\n\<event\>\n\<next_key\>\n\<next_value\>\n...
+- \<event\>[\n\<old_key\>\n\<old_value\>]\n\<key\>\n\<value\>\n\<event\>\n\<next_key\>\n\<next_value\>\n...
 
 - Additional error string if WATCH failed. Exit code is non-zero.
 

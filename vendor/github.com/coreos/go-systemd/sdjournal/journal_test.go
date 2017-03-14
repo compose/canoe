@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"strings"
 	"testing"
@@ -59,7 +60,7 @@ func TestJournalFollow(t *testing.T) {
 			case <-done:
 				return
 			default:
-				if err = journal.Print(journal.PriInfo, "test message %s", time.Now()); err != nil {
+				if err := journal.Print(journal.PriInfo, "test message %s", time.Now()); err != nil {
 					t.Fatalf("Error writing to journal: %s", err)
 				}
 
@@ -106,24 +107,6 @@ func TestJournalCursorGetSeekAndTest(t *testing.T) {
 	}
 
 	defer j.Close()
-
-	waitAndNext := func(j *Journal) error {
-		r := j.Wait(time.Duration(1) * time.Second)
-		if r < 0 {
-			return errors.New("Error waiting to journal")
-		}
-
-		n, err := j.Next()
-		if err != nil {
-			return fmt.Errorf("Error reading to journal: %s", err)
-		}
-
-		if n == 0 {
-			return fmt.Errorf("Error reading to journal: %s", io.EOF)
-		}
-
-		return nil
-	}
 
 	err = journal.Print(journal.PriInfo, "test message for cursor %s", time.Now())
 	if err != nil {
@@ -342,4 +325,119 @@ func TestJournalReaderSmallReadBuffer(t *testing.T) {
 	if got[1] != strings.Trim(want, delim) {
 		t.Fatalf("Got unexpected message %s", got[1])
 	}
+}
+
+func TestJournalGetUniqueValues(t *testing.T) {
+	j, err := NewJournal()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer j.Close()
+
+	uniqueString := generateRandomField(20)
+	testEntries := []string{"A", "B", "C", "D"}
+	for _, v := range testEntries {
+		err := journal.Send("TEST: "+uniqueString, journal.PriInfo, map[string]string{uniqueString: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// TODO: add proper `waitOnMatch` function which should wait for journal entry with filter to commit.
+	time.Sleep(time.Millisecond * 500)
+
+	values, err := j.GetUniqueValues(uniqueString)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(values) != len(testEntries) {
+		t.Fatalf("Expect %d entries. Got %d", len(testEntries), len(values))
+	}
+
+	if !contains(values, "A") || !contains(values, "B") || !contains(values, "C") || !contains(values, "D") {
+		t.Fatalf("Expect 4 values for %s field: A,B,C,D. Got %s", uniqueString, values)
+	}
+}
+
+func TestJournalGetCatalog(t *testing.T) {
+	want := []string{
+		"Subject: ",
+		"Defined-By: systemd",
+		"Support: ",
+	}
+	j, err := NewJournal()
+	if err != nil {
+		t.Fatalf("Error opening journal: %s", err)
+	}
+
+	if j == nil {
+		t.Fatal("Got a nil journal")
+	}
+
+	defer j.Close()
+
+	if err = j.SeekHead(); err != nil {
+		t.Fatalf("Seek to head failed: %s", err)
+	}
+
+	matchField := SD_JOURNAL_FIELD_SYSTEMD_UNIT
+	m := Match{Field: matchField, Value: "systemd-journald.service"}
+	if err = j.AddMatch(m.String()); err != nil {
+		t.Fatalf("Error adding matches to journal: %s", err)
+	}
+
+	if err = waitAndNext(j); err != nil {
+		t.Fatalf(err.Error())
+	}
+
+	catalog, err := j.GetCatalog()
+
+	if err != nil {
+		t.Fatalf("Failed to retrieve catalog entry: %s", err)
+	}
+
+	for _, w := range want {
+		if !strings.Contains(catalog, w) {
+			t.Fatalf("Failed to find \"%s\" in \n%s", w, catalog)
+		}
+	}
+}
+
+func contains(s []string, v string) bool {
+	for _, entry := range s {
+		if entry == v {
+			return true
+		}
+	}
+	return false
+}
+
+func generateRandomField(n int) string {
+	letters := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	s := make([]rune, n)
+	rand.Seed(time.Now().UnixNano())
+	for i := range s {
+		s[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(s)
+}
+
+func waitAndNext(j *Journal) error {
+	r := j.Wait(time.Duration(1) * time.Second)
+	if r < 0 {
+		return errors.New("Error waiting to journal")
+	}
+
+	n, err := j.Next()
+	if err != nil {
+		return fmt.Errorf("Error reading to journal: %s", err)
+	}
+
+	if n == 0 {
+		return fmt.Errorf("Error reading to journal: %s", io.EOF)
+	}
+
+	return nil
 }

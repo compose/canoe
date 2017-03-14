@@ -47,6 +47,9 @@ type Op struct {
 	// for range, watch
 	rev int64
 
+	// for watch, put, delete
+	prevKV bool
+
 	// progressNotify is for progress updates.
 	progressNotify bool
 
@@ -73,10 +76,10 @@ func (op Op) toRequestOp() *pb.RequestOp {
 		}
 		return &pb.RequestOp{Request: &pb.RequestOp_RequestRange{RequestRange: r}}
 	case tPut:
-		r := &pb.PutRequest{Key: op.key, Value: op.val, Lease: int64(op.leaseID)}
+		r := &pb.PutRequest{Key: op.key, Value: op.val, Lease: int64(op.leaseID), PrevKv: op.prevKV}
 		return &pb.RequestOp{Request: &pb.RequestOp_RequestPut{RequestPut: r}}
 	case tDeleteRange:
-		r := &pb.DeleteRangeRequest{Key: op.key, RangeEnd: op.end}
+		r := &pb.DeleteRangeRequest{Key: op.key, RangeEnd: op.end, PrevKv: op.prevKV}
 		return &pb.RequestOp{Request: &pb.RequestOp_RequestDeleteRange{RequestDeleteRange: r}}
 	default:
 		panic("Unknown Op")
@@ -212,14 +215,15 @@ func WithPrefix() OpOption {
 	}
 }
 
-// WithRange specifies the range of 'Get' or 'Delete' requests.
+// WithRange specifies the range of 'Get', 'Delete', 'Watch' requests.
 // For example, 'Get' requests with 'WithRange(end)' returns
 // the keys in the range [key, end).
+// endKey must be lexicographically greater than start key.
 func WithRange(endKey string) OpOption {
 	return func(op *Op) { op.end = []byte(endKey) }
 }
 
-// WithFromKey specifies the range of 'Get' or 'Delete' requests
+// WithFromKey specifies the range of 'Get', 'Delete', 'Watch' requests
 // to be equal or greater than the key in the argument.
 func WithFromKey() OpOption { return WithRange("\x00") }
 
@@ -269,5 +273,13 @@ func withTop(target SortTarget, order SortOrder) []OpOption {
 func WithProgressNotify() OpOption {
 	return func(op *Op) {
 		op.progressNotify = true
+	}
+}
+
+// WithPrevKV gets the previous key-value pair before the event happens. If the previous KV is already compacted,
+// nothing will be returned.
+func WithPrevKV() OpOption {
+	return func(op *Op) {
+		op.prevKV = true
 	}
 }

@@ -179,12 +179,12 @@ func startEtcdOrProxyV2() {
 		// for accepting connections. The etcd instance should be
 		// joined with the cluster and ready to serve incoming
 		// connections.
-		err := daemon.SdNotify("READY=1")
+		sent, err := daemon.SdNotify("READY=1")
 		if err != nil {
 			plog.Errorf("failed to notify systemd for readiness: %v", err)
-			if err == daemon.SdNotifyNoSocket {
-				plog.Errorf("forgot to set Type=notify in systemd service file?")
-			}
+		}
+		if !sent {
+			plog.Errorf("forgot to set Type=notify in systemd service file?")
 		}
 	}
 
@@ -368,6 +368,7 @@ func startEtcd(cfg *config) (<-chan struct{}, error) {
 		QuotaBackendBytes:       cfg.QuotaBackendBytes,
 		StrictReconfigCheck:     cfg.StrictReconfigCheck,
 		EnablePprof:             cfg.enablePprof,
+		ClientCertAuthEnabled:   cfg.clientTLSInfo.ClientCertAuth,
 	}
 	var s *etcdserver.EtcdServer
 	s, err = etcdserver.NewServer(srvcfg)
@@ -559,6 +560,9 @@ func getPeerURLsMapAndToken(cfg *config, which string) (urlsmap types.URLsMap, t
 		clusterStr, token, err = discovery.SRVGetCluster(cfg.Name, cfg.DnsCluster, cfg.InitialClusterToken, cfg.apurls)
 		if err != nil {
 			return nil, "", err
+		}
+		if strings.Contains(clusterStr, "https://") && cfg.peerTLSInfo.CAFile == "" {
+			cfg.peerTLSInfo.ServerName = cfg.DnsCluster
 		}
 		urlsmap, err = types.NewURLsMap(clusterStr)
 		// only etcd member must belong to the discovered cluster.

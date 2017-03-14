@@ -49,6 +49,7 @@ var (
 		"2.1.0": {streamTypeMsgAppV2, streamTypeMessage},
 		"2.2.0": {streamTypeMsgAppV2, streamTypeMessage},
 		"2.3.0": {streamTypeMsgAppV2, streamTypeMessage},
+		"3.0.0": {streamTypeMsgAppV2, streamTypeMessage},
 	}
 )
 
@@ -332,7 +333,16 @@ func (cr *streamReader) decodeLoop(rc io.ReadCloser, t streamType) error {
 	default:
 		plog.Panicf("unhandled stream type %s", t)
 	}
-	cr.closer = rc
+	select {
+	case <-cr.stopc:
+		cr.mu.Unlock()
+		if err := rc.Close(); err != nil {
+			return err
+		}
+		return io.EOF
+	default:
+		cr.closer = rc
+	}
 	cr.mu.Unlock()
 
 	for {

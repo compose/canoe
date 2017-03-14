@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/coreos/etcd/auth"
 	"github.com/coreos/etcd/compactor"
 	"github.com/coreos/etcd/discovery"
+	"github.com/coreos/etcd/etcdserver/api"
 	"github.com/coreos/etcd/etcdserver/api/v2http/httptypes"
 	pb "github.com/coreos/etcd/etcdserver/etcdserverpb"
 	"github.com/coreos/etcd/etcdserver/membership"
@@ -153,13 +155,13 @@ type Server interface {
 
 // EtcdServer is the production implementation of the Server interface
 type EtcdServer struct {
-	// r and inflightSnapshots must be the first elements to keep 64-bit alignment for atomic
-	// access to fields
-
-	// count the number of inflight snapshots.
-	// MUST use atomic operation to access this field.
-	inflightSnapshots int64
-	Cfg               *ServerConfig
+	// inflightSnapshots holds count the number of snapshots currently inflight.
+	inflightSnapshots int64  // must use atomic operations to access; keep 64-bit aligned.
+	appliedIndex      uint64 // must use atomic operations to access; keep 64-bit aligned.
+	// consistIndex used to hold the offset of current executing entry
+	// It is initialized to 0 before executing any entry.
+	consistIndex consistentIndex // must use atomic operations to access; keep 64-bit aligned.
+	Cfg          *ServerConfig
 
 	readych chan struct{}
 	r       raftNode
@@ -194,10 +196,6 @@ type EtcdServer struct {
 	// compactor is used to auto-compact the KV.
 	compactor *compactor.Periodic
 
-	// consistent index used to hold the offset of current executing entry
-	// It is initialized to 0 before executing any entry.
-	consistIndex consistentIndex
-
 	// peerRt used to send requests (version, lease) to peers.
 	peerRt   http.RoundTripper
 	reqIDGen *idutil.Generator
@@ -211,8 +209,6 @@ type EtcdServer struct {
 	// wg is used to wait for the go routines that depends on the server state
 	// to exit when stopping the server.
 	wg sync.WaitGroup
-
-	appliedIndex uint64
 }
 
 // NewServer creates a new EtcdServer from the supplied configuration. The
@@ -356,7 +352,7 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 		}
 		cl.SetStore(st)
 		cl.SetBackend(be)
-		cl.Recover()
+		cl.Recover(api.UpdateCapability)
 		if cl.Version() != nil && !cl.Version().LessThan(semver.Version{Major: 3}) && !beExist {
 			os.RemoveAll(bepath)
 			return nil, fmt.Errorf("database file (%v) of the backend is missing", bepath)
@@ -403,15 +399,23 @@ func NewServer(cfg *ServerConfig) (srv *EtcdServer, err error) {
 	srv.applyV2 = &applierV2store{store: srv.store, cluster: srv.cluster}
 
 	srv.be = be
-	srv.lessor = lease.NewLessor(srv.be)
+	minTTL := time.Duration((3*cfg.ElectionTicks)/2) * time.Duration(cfg.TickMs) * time.Millisecond
+	srv.lessor = lease.NewLessor(srv.be, int64(math.Ceil(minTTL.Seconds())))
+
 	srv.kv = mvcc.New(srv.be, srv.lessor, &srv.consistIndex)
 	if beExist {
 		kvindex := srv.kv.ConsistentIndex()
+		// TODO: remove kvindex != 0 checking when we do not expect users to upgrade
+		// etcd from pre-3.0 release.
 		if snapshot != nil && kvindex < snapshot.Metadata.Index {
-			return nil, fmt.Errorf("database file (%v index %d) does not match with snapshot (index %d).", bepath, kvindex, snapshot.Metadata.Index)
+			if kvindex != 0 {
+				return nil, fmt.Errorf("database file (%v index %d) does not match with snapshot (index %d).", bepath, kvindex, snapshot.Metadata.Index)
+			}
+			plog.Warningf("consistent index never saved (snapshot index=%d)", snapshot.Metadata.Index)
 		}
 	}
 	srv.consistIndex.setConsistentIndex(srv.kv.ConsistentIndex())
+
 	srv.authStore = auth.NewAuthStore(srv.be)
 	if h := cfg.AutoCompactionRetention; h != 0 {
 		srv.compactor = compactor.NewPeriodic(h, srv.kv, srv)
@@ -657,6 +661,14 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 
 	newbe := backend.NewDefaultBackend(fn)
 
+	// always recover lessor before kv. When we recover the mvcc.KV it will reattach keys to its leases.
+	// If we recover mvcc.KV first, it will attach the keys to the wrong lessor before it recovers.
+	if s.lessor != nil {
+		plog.Info("recovering lessor...")
+		s.lessor.Recover(newbe, s.kv)
+		plog.Info("finished recovering lessor")
+	}
+
 	plog.Info("restoring mvcc store...")
 
 	if err := s.kv.Restore(newbe); err != nil {
@@ -683,12 +695,6 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 	s.be = newbe
 	s.bemu.Unlock()
 
-	if s.lessor != nil {
-		plog.Info("recovering lessor...")
-		s.lessor.Recover(newbe, s.kv)
-		plog.Info("finished recovering lessor")
-	}
-
 	plog.Info("recovering alarms...")
 	if err := s.restoreAlarms(); err != nil {
 		plog.Panicf("restore alarms error: %v", err)
@@ -709,7 +715,7 @@ func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
 
 	s.cluster.SetBackend(s.be)
 	plog.Info("recovering cluster configuration...")
-	s.cluster.Recover()
+	s.cluster.Recover(api.UpdateCapability)
 	plog.Info("finished recovering cluster configuration")
 
 	plog.Info("removing old peers from network...")
