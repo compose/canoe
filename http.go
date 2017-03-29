@@ -67,7 +67,7 @@ func (rn *Node) peerMembersHandlerFunc() func(http.ResponseWriter, *http.Request
 }
 
 func (rn *Node) handlePeerMembersRequest(w http.ResponseWriter, req *http.Request) {
-	if !rn.initialized {
+	if !rn.initialized.IsSet() {
 		rn.writeNodeNotReady(w)
 	} else {
 		membersResp := &cTypes.ConfigMembershipResponseData{
